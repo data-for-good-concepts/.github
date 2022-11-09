@@ -1,3 +1,5 @@
+## Our Mission
+
 **Data For Good Concepts** is an organization that provides open source data product examples, that can be used as blueprints for individuals and teams that may not yet have the experience or the resources to develop advanced data products themselves. 
 
 Ideally the concepts published in this organization, help especially those that aim to work on projects, that have a positive social or environmental impact on our society. 
