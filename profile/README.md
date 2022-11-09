@@ -4,6 +4,6 @@ Ideally the concepts published in this organization, help especially those that 
 
 All concepts published in this organization try to cover as many best practices as possible, that are commonly known and used in the industry. The examples provided here are designed with the intention to run in a `production` environment. That includes the following but not only - coding, infrastructure setup  and deployment strategies. 
 
-Even though we develop products to the best of our knowledge and abilities, they won't be perfect. Any support from the community to help improve is appreciated and wanted.  ❤️
+Even though the samples where developed to the best knowledge and abilities, they won't be perfect. Any support from the community to help improve is appreciated and wanted.  ❤️
 
 Best - Data For Good Concepts 
