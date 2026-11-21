@@ -13,8 +13,9 @@ import ImageIO
 /// - confidence/*.png   ARKit's confidence in each depth reading (0 low, 1 medium, 2 high)
 /// - keyframes.json     camera position, lens, exposure and file names for every still photo
 ///
-/// Call every method on the main thread.
-final class FrameRecorder {
+/// Call every method on the main thread. Photo encoding runs on `jpegQueue`; the state it touches
+/// (`keyframes`, `sharpnessHistory`) is only used on that queue, so the class is safe to share.
+final class FrameRecorder: @unchecked Sendable {
     struct Frame: Codable {
         let file: String?
         let time: Double

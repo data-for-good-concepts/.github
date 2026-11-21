@@ -10,7 +10,8 @@ import simd
 /// are shown on the scanning screen.
 ///
 /// Voxels are grouped in 1 m chunks so the screen only rebuilds the parts that changed.
-final class CoverageMap {
+/// All work runs on its own serial queue; results reach `onUpdate` on the main thread.
+final class CoverageMap: @unchecked Sendable {
     struct Points {
         var positions: [SIMD3<Float>] = []
         var colors: [SIMD3<Float>] = []
