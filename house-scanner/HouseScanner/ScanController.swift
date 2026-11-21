@@ -56,6 +56,7 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureSessionDelega
     private var lastMeshCheck: TimeInterval = 0
     /// RoomPlan's model of the finished rooms plus the one being scanned, used to fill the canvas.
     private var roomDepth = RoomDepth(rooms: [])
+    private var lastPosition: SIMD3<Float>?
 
     private(set) lazy var captureSession: RoomCaptureSession = {
         let session = RoomCaptureSession(arSession: arSession)
@@ -84,9 +85,11 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureSessionDelega
         link.add(to: .main, forMode: .common)
         displayLink = link
         haptics.prepare()
+        // Nobody touches the screen while scanning: don't let the phone lock and interrupt tracking.
+        UIApplication.shared.isIdleTimerDisabled = true
 
         if let worldMap {
-            let configuration = ARWorldTrackingConfiguration()
+            let configuration = Self.lidarConfiguration()
             configuration.initialWorldMap = worldMap
             arSession.run(configuration, options: [.resetTracking, .removeExistingAnchors])
         } else {
@@ -96,19 +99,53 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureSessionDelega
 
     func startRoom() {
         guard phase == .idle || phase == .roomDone else { return }
+        // Start the session with ARKit's mesh switched on before RoomPlan takes it over: RoomPlan
+        // keeps the mesh running (it drops per-frame depth). Between rooms the session already runs
+        // `lidarConfiguration` (see `startLiDARWalk`), and after relocalising it was started with it.
+        if arSession.configuration == nil {
+            arSession.run(Self.lidarConfiguration())
+        }
+        print("[HouseScanner] RoomPlan starting room \(rooms.count + 1) at \(Self.position(arSession.currentFrame))")
         captureSession.run(configuration: RoomCaptureSession.Configuration())
         phase = .scanning
         startRecordingIfNeeded()
     }
 
-    /// What RoomPlan's own session provides. The app must not change RoomPlan's session settings:
-    /// re-running it with extra options makes RoomPlan stop with "World tracking failure".
+    /// ARKit with LiDAR depth per frame and the labelled mesh.
+    private static func lidarConfiguration() -> ARWorldTrackingConfiguration {
+        let configuration = ARWorldTrackingConfiguration()
+        if ARWorldTrackingConfiguration.supportsSceneReconstruction(.meshWithClassification) {
+            configuration.sceneReconstruction = .meshWithClassification
+        }
+        if ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
+            configuration.frameSemantics.insert(.sceneDepth)
+        }
+        return configuration
+    }
+
+    /// After each room RoomPlan isn't running, so the app takes the session over with LiDAR depth and
+    /// mesh, keeping tracking and the world origin so everything stays in the same coordinates.
+    /// Photos taken now (the "LiDAR walk") are saved with real depth and confidence maps.
+    private func startLiDARWalk() {
+        print("[HouseScanner] LiDAR walk starting at \(Self.position(arSession.currentFrame))")
+        arSession.run(Self.lidarConfiguration())
+    }
+
+    private static func position(_ frame: ARFrame?) -> String {
+        guard let t = frame?.camera.transform else { return "(no frame)" }
+        return String(format: "(%.2f, %.2f, %.2f)", t.columns.3.x, t.columns.3.y, t.columns.3.z)
+    }
+
+    /// What the session provides, for the status chip. The app must not change RoomPlan's session
+    /// settings while it scans: that makes RoomPlan stop with "World tracking failure".
     private func updateLiDARStatus(_ frame: ARFrame) {
         let depth = frame.sceneDepth != nil || frame.smoothedSceneDepth != nil
         // RoomPlan switches on a reconstruction mode of its own, but that gives the app no mesh
         // anchors: only count the mesh as on when there really is one.
         let mesh = frame.anchors.contains { $0 is ARMeshAnchor }
-        let status = "LiDAR depth: \(depth ? "on" : "off") · Mesh: \(mesh ? "on" : "off") · Room model: \(roomDepth.count)"
+        let status = phase == .scanning
+            ? "Room scan · mesh \(mesh ? "✓" : "✗") · \(roomDepth.count) surfaces"
+            : "LiDAR walk · depth \(depth ? "✓" : "✗") · mesh \(mesh ? "✓" : "✗")"
         if status != lidarStatus { lidarStatus = status }
     }
 
@@ -162,6 +199,7 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureSessionDelega
     }
 
     func shutdown() {
+        UIApplication.shared.isIdleTimerDisabled = false
         displayLink?.invalidate()
         displayLink = nil
         recorder?.cancel()
@@ -189,11 +227,18 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureSessionDelega
             return
         }
         canvas.follow(frame.camera)
+        #if DEBUG
+        let p = SIMD3<Float>(frame.camera.transform.columns.3.x, frame.camera.transform.columns.3.y, frame.camera.transform.columns.3.z)
+        if let last = lastPosition, simd_distance(p, last) > 0.3 {
+            print("[HouseScanner] JUMP \(String(format: "%.2f", simd_distance(p, last))) m in one frame, phase=\(phase)")
+        }
+        lastPosition = p
+        #endif
 
         if frame.timestamp - lastMeshCheck > 1 {
             lastMeshCheck = frame.timestamp
             collectMesh()
-            if phase == .scanning { updateLiDARStatus(frame) }
+            if phase == .scanning || phase == .roomDone { updateLiDARStatus(frame) }
             logDiagnostics(frame)
         }
 
@@ -203,7 +248,7 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureSessionDelega
         let wanted: CaptureHint
         if now < photoSavedUntil {
             wanted = .photoSaved
-        } else if phase == .scanning, hint == .holdStill {
+        } else if phase == .scanning || phase == .roomDone, hint == .holdStill {
             wanted = .holdStill
         } else {
             wanted = .none
@@ -352,6 +397,7 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureSessionDelega
                     self.rooms.append(room)
                     self.roomDepth = RoomDepth(rooms: self.rooms)
                     self.phase = .roomDone
+                    self.startLiDARWalk()
                 }
             } catch {
                 await MainActor.run { self.roomFailed(error) }

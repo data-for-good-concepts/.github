@@ -42,7 +42,7 @@ struct ScanView: View {
                         .padding(.vertical, 8)
                         .background(.ultraThinMaterial, in: Capsule())
                 }
-                if controller.phase == .scanning, !controller.lidarStatus.isEmpty {
+                if controller.phase == .scanning || controller.phase == .roomDone, !controller.lidarStatus.isEmpty {
                     Text(controller.lidarStatus)
                         .font(.caption.monospaced())
                         .foregroundStyle(.white.opacity(0.7))
@@ -203,9 +203,10 @@ struct ScanView: View {
 
         case .roomDone:
             VStack(spacing: 12) {
-                hint(controller.mapIsGoodForContinuing
-                     ? "To add another room, walk into it through the doorway, then tap Scan next room. Rooms scanned in one go are joined together."
-                     : "To add another room, walk into it through the doorway, then tap Scan next room. Before saving, look around a little more so you can add rooms to this scan later.")
+                hint("LiDAR walk: walk slowly around this room for about 30 seconds and stop for each photo. These photos get LiDAR depth.\n"
+                     + (controller.mapIsGoodForContinuing
+                        ? "Then, to add another room, walk into it through the doorway and tap Scan next room. Rooms scanned in one go are joined together."
+                        : "Then, to add another room, walk into it through the doorway and tap Scan next room. Before saving, look around a little more so you can add rooms to this scan later."))
                 HStack(spacing: 12) {
                     bigButton("Scan next room", systemImage: "plus.circle.fill", prominent: false) {
                         controller.startRoom()

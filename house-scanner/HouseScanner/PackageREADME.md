@@ -3,7 +3,7 @@
 This folder is a scan of a home made with an iPhone's LiDAR sensor and camera. It holds **all the raw data** needed to build a photoreal 3D rendering, in **one shared 3D coordinate system**:
 
 1. **RoomPlan**: Apple's clean, labelled model of the rooms (walls, doors, windows, openings, floors, furniture boxes) with accurate measurements.
-2. **Photos**: sharp stills at full sensor resolution, each with the exact camera position, lens data, exposure and a **LiDAR depth map**.
+2. **Photos**: sharp stills at full sensor resolution, each with the exact camera position, lens data and exposure. Photos taken during the LiDAR walk after each room also have a **LiDAR depth map** (RoomPlan doesn't share depth while it scans; `depthFile` in `keyframes.json` says which photos have one).
 3. **LiDAR mesh**: ARKit's raw triangle mesh of everything the sensor saw, with a label for each triangle.
 4. **Video**: camera poses for every video frame. The video files themselves are only in the "with video" package.
 
@@ -24,7 +24,7 @@ Nothing has been rendered or processed yet. Choose the method that suits the goa
 | `transforms.json` | **nerfstudio format**, ready for training. Per-frame `file_path`, `transform_matrix` (camera-to-world), `fl_x`, `fl_y`, `cx`, `cy`, `w`, `h`, and `depth_file_path` when every photo has depth. Uses `camera_model: PINHOLE` and `depth_unit_scale_factor: 0.001`. |
 | `keyframes.json` | The same photos with more detail: `file`, `width`, `height`, `intrinsics` [fx, fy, cx, cy], `transform` (camera-to-world, column-major), `time`, `depthFile`, `confidenceFile`, `exposureDuration` (s), `exposureOffset` (EV), `ambientIntensity` and `colorTemperature` (ARKit light estimate, when available). |
 | `keyframes/*.jpg` | Photos, 1920×1440, taken when the phone was held still at a new viewpoint, with blurry ones rejected. Roughly one every 30 cm or 15° of turn. |
-| `depth/*.png` | LiDAR depth for each photo: 16-bit PNG, **millimetres**, 0 = no reading, 256×192. It is the same camera as the photo: scale it up to the photo's size. |
+| `depth/*.png` | LiDAR depth for the photos that have it (see `depthFile`): 16-bit PNG, **millimetres**, 0 = no reading, 256×192. It is the same camera as the photo: scale it up to the photo's size. |
 | `confidence/*.png` | ARKit's confidence in each depth pixel: 8-bit PNG, 0 low, 1 medium, 2 high. Use only 2 (or 1 and 2) for geometry. |
 | `mesh/mesh-N.ply` | LiDAR mesh of session N (binary little-endian PLY). Vertices: `float x, y, z` in world space. Faces: `list uchar uint vertex_indices` (always 3) and `uchar classification`. |
 | `house-scene.json` | Clean RoomPlan model, documented in its own `notes` field. `rooms[]` each have `walls`, `doors`, `windows`, `openings`, `floors` and `objects`, with `id`, `position`, `rotationY`, `size` [w, h, d], `matrix` and `confidence`. Doors and windows have `parentId` (the wall they sit in). Floors have `corners`. Objects have a `category` (sofa, bed, …). Surfaces are flat (one size is 0). |

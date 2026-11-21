@@ -4,7 +4,7 @@
 iPhone app (LiDAR + camera)                                  Claude
 RoomPlan rooms + measurements ─┐                             reads README + manifest, then builds the
 Full-res photos + camera poses │                             rendering that fits the goal, for example:
-LiDAR depth per photo          ├─ house-scan.zip ──────────▶  · Gaussian splats (photoreal), run on a GPU
+LiDAR depth (LiDAR-walk photos)├─ house-scan.zip ──────────▶  · Gaussian splats (photoreal), run on a GPU
 LiDAR mesh (labelled)          │  (manifest.json, README.md,  · textured mesh (Blender / games)
 Video + poses                  ┘   transforms.json)           · three.js viewer with RoomPlan measurements
 ```
@@ -16,7 +16,7 @@ An iPhone app that scans your home with the LiDAR sensor and camera and exports 
 - 2D floor plan with wall lengths, doors, windows and furniture
 - Floor area, ceiling height, and counts of doors, windows and furniture
 - View the model in 3D or place it in AR on a table
-- **Records the camera while scanning**: an MP4 video, plus sharp still photos at full sensor resolution (1920×1440), each with the exact camera position, lens data, exposure and a **LiDAR depth map** with confidence. A yellow **Hold still for a photo** sign appears whenever the phone reaches a new viewpoint (about every 30 cm or 15°), and blurry photos are thrown away.
+- **Records the camera while scanning**: an MP4 video, plus sharp still photos at full sensor resolution (1920×1440), each with the exact camera position, lens data and exposure. Photos taken during the **LiDAR walk** after each room also get a **LiDAR depth map** with confidence (RoomPlan doesn't share depth while it scans a room). A yellow **Hold still for a photo** sign appears whenever the phone reaches a new viewpoint (about every 30 cm or 15°), and blurry photos are thrown away.
 - **LiDAR mesh**: ARKit's triangle mesh (with wall/floor/table/seat/… labels) is captured alongside RoomPlan and saved per session as PLY.
 - **Package for Claude**: `house-scan.zip` bundles all of it with a `manifest.json`, a nerfstudio-style `transforms.json` (ready for Gaussian splatting) and a `README.md`. The README documents every file and coordinate convention and how to build a photoreal rendering (see `HouseScanner/PackageREADME.md`). *Package with video* adds the videos too. An example is in `samples/house-scan-sample.zip`.
 - **Add rooms later**: open a scan and tap *Add rooms to this scan*. The phone recognises the place from the saved ARKit world map and new rooms join onto the earlier ones.
@@ -48,6 +48,7 @@ An iPhone app that scans your home with the LiDAR sensor and camera and exports 
 - Use good, even lighting. Avoid pointing at mirrors and large windows for a long time.
 - Move slowly and sweep the camera from floor to ceiling. Make sure every wall corner has been seen.
 - **Several rooms:** after *Done with this room*, walk through the doorway into the next room, then tap *Scan next room*. Do all rooms in one session so they line up.
+- **LiDAR walk:** after *Done with this room*, walk slowly around the room once more for about 30 seconds, stopping for each photo. These photos get LiDAR depth, and the mesh fills in.
 - Close cupboards and keep doors in a consistent position (fully open or closed).
 - **Fill the black:** sweep the camera up to the ceiling and down to the floor on every wall. When the yellow *Hold still to reveal this area* sign appears, stop for a moment until it turns green: that area then appears on screen. Keep going until no gaps are left.
 
@@ -80,7 +81,7 @@ Every scan folder contains:
 | `video-poses.json`, `video-poses-2.json`… | Camera position and lens data for every video frame |
 | `worldmap.arexperience` | ARKit's map of the place, used to line up later sessions |
 | `keyframes/*.jpg`, `keyframes.json` | Sharp still photos (1920×1440) from all sessions, with camera position, lens data and exposure |
-| `depth/*.png`, `confidence/*.png` | LiDAR depth (16-bit, mm) and its confidence for each photo |
+| `depth/*.png`, `confidence/*.png` | LiDAR depth (16-bit, mm) and its confidence for each photo taken during a LiDAR walk |
 | `mesh/mesh-N.ply` | LiDAR mesh of each session, with a label per triangle |
 
 ## Files
