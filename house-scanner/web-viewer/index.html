@@ -217,6 +217,10 @@
         <button id="v-top" aria-pressed="false">Plan</button>
         <button id="v-walk" aria-pressed="false">Walk</button>
       </div>
+      <div class="seg" role="group" aria-label="Look" id="look" hidden>
+        <button id="l-model" aria-pressed="true">Model</button>
+        <button id="l-splats" aria-pressed="false">Splats</button>
+      </div>
       <label class="switch" for="cut"><input id="cut" type="checkbox" checked><span></span>Cutaway</label>
       <label class="switch" for="tex" id="tex-wrap" hidden><input id="tex" type="checkbox" checked><span></span>Textures</label>
       <div class="spacer"></div>
@@ -236,8 +240,9 @@
 
 <script type="importmap">
 { "imports": {
-  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+  "@sparkjsdev/spark": "https://cdn.jsdelivr.net/npm/@sparkjsdev/spark@2.4.0/dist/spark.module.js"
 } }
 </script>
 
@@ -245,6 +250,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark';
 
 const $ = (id) => document.getElementById(id);
 const WALL_T = 0.1;          // wall thickness in metres (the scanner gives flat walls)
@@ -347,7 +353,10 @@ function disposeGroup(g) {
 }
 
 function build(data) {
-  if (house) { scene.remove(house.group); disposeGroup(house.group); }
+  if (house) {
+    scene.remove(house.group); disposeGroup(house.group);
+    if (house.splats) { scene.remove(house.splats.lower, house.splats.upper); house.splats.lower.dispose(); house.splats.upper.dispose(); }
+  }
   const group = new THREE.Group();
   const pickables = [], floorMeshes = [], rooms = [], wallSurfaces = [], floorSurfaces = [];
   const clip = { clippingPlanes: [cutPlane] };
@@ -464,6 +473,7 @@ function build(data) {
       const mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color, roughness: 0.75, ...clip }));
       mesh.castShadow = true; mesh.receiveShadow = true;
       mesh.userData.info = { name: niceName(o.category), size: o.size };
+      mesh.userData.objectId = o.id;
       pickables.push(mesh); rg.add(mesh);
     }
 
@@ -477,7 +487,10 @@ function build(data) {
   const box = new THREE.Box3().setFromObject(group);
   const center = box.getCenter(new THREE.Vector3());
   const size = box.getSize(new THREE.Vector3());
-  house = { group, rooms, pickables, floors: floorMeshes, center, size, floorY: box.min.y, data, wallSurfaces, floorSurfaces, decals: [] };
+  house = { group, rooms, pickables, floors: floorMeshes, center, size, floorY: box.min.y, data, wallSurfaces, floorSurfaces, decals: [],
+            meshFurniture: [], furnitureBoxes: [], splats: null };
+  $('look').hidden = true;
+  look = 'model';
 
   // Sun placement and shadow area sized to the house.
   const r = Math.max(size.x, size.z) * 0.75 + 2;
@@ -600,6 +613,7 @@ function updateCut() {
   renderer.clippingPlanes = [];
   renderer.localClippingEnabled = $('cut').checked && view !== 'walk';
   $('cut').disabled = view === 'walk';
+  if (house?.splats) setLook(look);
 }
 
 $('v-orbit').addEventListener('click', () => setView('orbit'));
@@ -708,12 +722,10 @@ function blocked(planes, a, b, skip) {
   return false;
 }
 
-async function bakeTextures(frameList, getBlob) {
-  const run = ++bakeRun;
-  const frames = prepareFrames(frameList);
-  const planes = wallPlanes();
+// Decoded photos (scaled to 960 px), most recently used kept.
+function makePhotoCache(getBlob, keep = 48) {
   const cache = new Map();
-  async function pixels(f) {
+  return async function pixels(f) {
     if (cache.has(f.file)) { const v = cache.get(f.file); cache.delete(f.file); cache.set(f.file, v); return v; }
     const blob = await getBlob(f.file);
     const bmp = await createImageBitmap(blob);
@@ -724,9 +736,29 @@ async function bakeTextures(frameList, getBlob) {
     bmp.close?.();
     const data = g.getImageData(0, 0, c.width, c.height);
     cache.set(f.file, data);
-    while (cache.size > 48) cache.delete(cache.keys().next().value);
+    while (cache.size > keep) cache.delete(cache.keys().next().value);
     return data;
-  }
+  };
+}
+
+// Is world point (x, y, z) hidden from photo f? Uses the LiDAR mesh's depth seen from that photo
+// (see renderDepthMaps). Without a mesh, falls back to testing the RoomPlan walls.
+function hiddenFrom(f, x, y, z, planes, skip) {
+  if (!f.depth) return planes ? blocked(planes, f.pos, _q.set(x, y, z), skip) : false;
+  const i = f.inv;
+  const X = i[0] * x + i[4] * y + i[8] * z + i[12];
+  const Y = i[1] * x + i[5] * y + i[9] * z + i[13];
+  const Z = i[2] * x + i[6] * y + i[10] * z + i[14];
+  if (Z > -0.05) return true;
+  const u = ((f.fx * X / -Z + f.cx) * DEPTH_W / f.w) | 0, v = ((f.fy * -Y / -Z + f.cy) * DEPTH_H / f.h) | 0;
+  if (u < 0 || v < 0 || u >= DEPTH_W || v >= DEPTH_H) return false;
+  const d = f.depth[v * DEPTH_W + u];
+  return d > 0 && -Z > d + OCCLUSION_TOLERANCE;
+}
+const _q = new THREE.Vector3();
+
+async function bakeTextures(frames, pixels, run) {
+  const planes = wallPlanes();
 
   // Each surface: origin O, edge vectors U and V, normal N facing the side the photos were taken from.
   const surfaces = [];
@@ -777,7 +809,7 @@ async function bakeTextures(frameList, getBlob) {
   }
 
   let done = 0;
-  setProgress(0, surfaces.length);
+  setProgress(0, surfaces.length, 'Texturing walls and floors');
   for (const sf of surfaces) {
     if (run !== bakeRun) return;
     const cols = Math.max(1, Math.ceil(sf.lenU / CELL)), rows = Math.max(1, Math.ceil(sf.lenV / CELL));
@@ -790,7 +822,7 @@ async function bakeTextures(frameList, getBlob) {
       const list = [];
       frames.forEach((f, k) => {
         const sc = score(f, sf.N);
-        if (sc > 0 && !blocked(planes, f.pos, P, sf.s)) list.push([k, sc]);
+        if (sc > 0 && !hiddenFrom(f, P.x, P.y, P.z, planes, sf.s)) list.push([k, sc]);
       });
       list.sort((a, b) => b[1] - a[1]);
       const top = list.slice(0, 3);
@@ -835,7 +867,7 @@ async function bakeTextures(frameList, getBlob) {
           if (!img) continue;
           const f = frames[k];
           let wgt = score(f, sf.N);
-          if (!wgt) continue;
+          if (!wgt || (f.depth && hiddenFrom(f, P.x, P.y, P.z))) continue;
           wgt = wgt * wgt * wgt * wgt;
           const uv = project(f, P.x, P.y, P.z, 1);
           // Bilinear sample.
@@ -866,10 +898,9 @@ async function bakeTextures(frameList, getBlob) {
     if (run !== bakeRun) return;
     applyTexture(sf, out);
     done++;
-    setProgress(done, surfaces.length);
+    setProgress(done, surfaces.length, 'Texturing walls and floors');
     await new Promise((r) => setTimeout(r, 0));
   }
-  setProgress(-1);
 }
 
 function applyTexture(sf, imageData) {
@@ -916,19 +947,449 @@ function showTextures(on) {
       d.visible = on;
     }
   }
+  // Mesh furniture with photo colours replaces the plain boxes; the boxes stay tappable.
+  for (const m of house.meshFurniture) m.visible = on;
+  for (const b of house.furnitureBoxes) b.material.visible = !on && look === 'model';
 }
 $('tex').addEventListener('change', (e) => showTextures(e.target.checked));
 
-function setProgress(done, total) {
+// ---------- LiDAR mesh: visibility, furniture and splats ----------
+// The package's mesh/*.ply files hold ARKit's LiDAR mesh in the same coordinates as everything
+// else, with a label per triangle (0 none, 1 wall, 2 floor, 3 ceiling, 4 table, 5 seat, 6 window, 7 door).
+const DEPTH_W = 192, DEPTH_H = 144;        // per-photo depth maps (the photos' 4:3 shape)
+const OCCLUSION_TOLERANCE = 0.1;           // metres: RoomPlan planes and the mesh differ by a few cm
+const SPLAT_BUDGET = 600000;               // most splats to make (phones stay smooth below ~1M)
+const SPLAT_SPACING_MIN = 0.018;           // metres between splats at most density
+const CLUSTER = 0.3;                       // metres; photo choice per cluster of points
+const FURNITURE_LABELS = new Set([0, 4, 5]);
+
+function parsePLY(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const headerEnd = new TextDecoder().decode(bytes.subarray(0, Math.min(4096, bytes.length))).indexOf('end_header');
+  if (headerEnd < 0) throw new Error('not a PLY file');
+  const headerText = new TextDecoder().decode(bytes.subarray(0, headerEnd));
+  if (!headerText.includes('binary_little_endian')) throw new Error('only binary little-endian PLY is supported');
+  let offset = headerEnd + 'end_header'.length;
+  while (bytes[offset] !== 10) offset++;
+  offset++;
+  const SIZE = { char: 1, uchar: 1, int8: 1, uint8: 1, short: 2, ushort: 2, int16: 2, uint16: 2, int: 4, uint: 4, int32: 4, uint32: 4, float: 4, float32: 4, double: 8, float64: 8 };
+  const elements = [];
+  for (const line of headerText.split('\n')) {
+    const w = line.trim().split(/\s+/);
+    if (w[0] === 'element') elements.push({ name: w[1], count: +w[2], props: [] });
+    else if (w[0] === 'property' && w[1] === 'list') elements.at(-1).props.push({ list: true, countType: w[2], type: w[3], name: w[4] });
+    else if (w[0] === 'property') elements.at(-1).props.push({ type: w[1], name: w[2] });
+  }
+  const view = new DataView(buffer);
+  const read = (type, at) => {
+    switch (type) {
+      case 'float': case 'float32': return view.getFloat32(at, true);
+      case 'double': case 'float64': return view.getFloat64(at, true);
+      case 'uchar': case 'uint8': return view.getUint8(at);
+      case 'char': case 'int8': return view.getInt8(at);
+      case 'ushort': case 'uint16': return view.getUint16(at, true);
+      case 'short': case 'int16': return view.getInt16(at, true);
+      case 'uint': case 'uint32': return view.getUint32(at, true);
+      default: return view.getInt32(at, true);
+    }
+  };
+  let positions = new Float32Array(0), indices = new Uint32Array(0), labels = new Uint8Array(0);
+  for (const el of elements) {
+    if (el.name === 'vertex') {
+      positions = new Float32Array(el.count * 3);
+      const fixed = el.props.every((p) => !p.list);
+      const stride = el.props.reduce((n, p) => n + SIZE[p.type], 0);
+      const at = {};
+      let o = 0;
+      for (const p of el.props) { at[p.name] = { o, type: p.type }; o += SIZE[p.type]; }
+      if (!fixed || !at.x) throw new Error('unexpected vertex format');
+      for (let i = 0; i < el.count; i++) {
+        const base = offset + i * stride;
+        positions[i * 3] = read(at.x.type, base + at.x.o);
+        positions[i * 3 + 1] = read(at.y.type, base + at.y.o);
+        positions[i * 3 + 2] = read(at.z.type, base + at.z.o);
+      }
+      offset += el.count * stride;
+    } else if (el.name === 'face') {
+      indices = new Uint32Array(el.count * 3);
+      labels = new Uint8Array(el.count);
+      for (let i = 0; i < el.count; i++) {
+        for (const p of el.props) {
+          if (p.list) {
+            const n = read(p.countType, offset); offset += SIZE[p.countType];
+            for (let k = 0; k < n; k++) {
+              const v = read(p.type, offset); offset += SIZE[p.type];
+              if (k < 3) indices[i * 3 + k] = v;    // the app writes triangles only
+            }
+          } else {
+            const v = read(p.type, offset); offset += SIZE[p.type];
+            if (p.name === 'classification') labels[i] = v;
+          }
+        }
+      }
+    } else {
+      // Unknown element: skip fixed-size ones, stop at anything else.
+      if (el.props.some((p) => p.list)) break;
+      offset += el.count * el.props.reduce((n, p) => n + SIZE[p.type], 0);
+    }
+  }
+  return { positions, indices, labels };
+}
+
+function mergeMeshes(parts) {
+  const nv = parts.reduce((n, p) => n + p.positions.length, 0), nf = parts.reduce((n, p) => n + p.labels.length, 0);
+  const positions = new Float32Array(nv), indices = new Uint32Array(nf * 3), labels = new Uint8Array(nf);
+  let vo = 0, fo = 0;
+  for (const p of parts) {
+    positions.set(p.positions, vo);
+    for (let k = 0; k < p.indices.length; k++) indices[fo * 3 + k] = p.indices[k] + vo / 3;
+    labels.set(p.labels, fo);
+    vo += p.positions.length; fo += p.labels.length;
+  }
+  return { positions, indices, labels };
+}
+
+// Renders the mesh's depth (metres along the view axis, 0 = nothing) from every photo's camera,
+// so texturing and colouring can tell what each photo really sees. Stored as f.depth.
+async function renderDepthMaps(frames, mesh, run) {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3));
+  geometry.setIndex(new THREE.BufferAttribute(mesh.indices, 1));
+  const material = new THREE.ShaderMaterial({
+    vertexShader: 'varying float vDepth; void main() { vec4 mv = modelViewMatrix * vec4(position, 1.0); vDepth = -mv.z; gl_Position = projectionMatrix * mv; }',
+    fragmentShader: 'varying float vDepth; void main() { gl_FragColor = vec4(vDepth, 0.0, 0.0, 1.0); }',
+    side: THREE.DoubleSide,
+  });
+  const depthScene = new THREE.Scene();
+  const meshObject = new THREE.Mesh(geometry, material);
+  meshObject.frustumCulled = false;
+  depthScene.add(meshObject);
+
+  const full = renderer.extensions.has('EXT_color_buffer_float');
+  const target = new THREE.WebGLRenderTarget(DEPTH_W, DEPTH_H, { type: full ? THREE.FloatType : THREE.HalfFloatType, depthBuffer: true });
+  const readback = full ? new Float32Array(DEPTH_W * DEPTH_H * 4) : new Uint16Array(DEPTH_W * DEPTH_H * 4);
+  const cam = new THREE.Camera();
+  cam.matrixAutoUpdate = false;
+  cam.matrixWorldAutoUpdate = false;
+  const near = 0.05, far = 30;
+  const previousTarget = renderer.getRenderTarget();
+  const previousClear = renderer.getClearColor(new THREE.Color()), previousAlpha = renderer.getClearAlpha();
+  const previousClipping = renderer.localClippingEnabled;
+  renderer.localClippingEnabled = false;
+  renderer.setClearColor(0x000000, 0);
+
+  for (let k = 0; k < frames.length; k++) {
+    if (run !== bakeRun) break;
+    const f = frames[k];
+    const sx = DEPTH_W / f.w, sy = DEPTH_H / f.h;
+    const fx = f.fx * sx, fy = f.fy * sy, cx = f.cx * sx, cy = f.cy * sy;
+    // The photo's pinhole camera (x right, y up, looking down -z, image rows top to bottom) as a projection.
+    cam.projectionMatrix.set(
+      2 * fx / DEPTH_W, 0, 1 - 2 * cx / DEPTH_W, 0,
+      0, 2 * fy / DEPTH_H, 2 * cy / DEPTH_H - 1, 0,
+      0, 0, -(far + near) / (far - near), -2 * far * near / (far - near),
+      0, 0, -1, 0);
+    cam.projectionMatrixInverse.copy(cam.projectionMatrix).invert();
+    cam.matrixWorldInverse.fromArray(f.inv);
+    cam.matrixWorld.copy(cam.matrixWorldInverse).invert();
+    renderer.setRenderTarget(target);
+    renderer.clear();
+    renderer.render(depthScene, cam);
+    renderer.readRenderTargetPixels(target, 0, 0, DEPTH_W, DEPTH_H, readback);
+    // Read-back rows run bottom to top; photo rows run top to bottom.
+    const depth = new Float32Array(DEPTH_W * DEPTH_H);
+    for (let y = 0; y < DEPTH_H; y++) {
+      const src = (DEPTH_H - 1 - y) * DEPTH_W * 4;
+      for (let x = 0; x < DEPTH_W; x++) {
+        const v = readback[src + x * 4];
+        depth[y * DEPTH_W + x] = full ? v : THREE.DataUtils.fromHalfFloat(v);
+      }
+    }
+    f.depth = depth;
+    if (k % 20 === 0) { setProgress(k, frames.length, 'Working out what each photo sees'); await new Promise((r) => setTimeout(r, 0)); }
+  }
+  renderer.setRenderTarget(previousTarget);
+  renderer.setClearColor(previousClear, previousAlpha);
+  renderer.localClippingEnabled = previousClipping;
+  target.dispose(); geometry.dispose(); material.dispose();
+}
+
+// Colours points (with surface normals) from the photos: for each ~30 cm cluster the best few photos
+// are chosen, then each point blends those that see it, weighted like the wall textures.
+// Returns RGB bytes and a mask of points that some photo saw.
+async function colourPoints(points, normals, frames, pixels, run, label) {
+  const n = points.length / 3;
+  const clusters = new Map();
+  const clusterOf = new Int32Array(n);
+  for (let i = 0; i < n; i++) {
+    const nx = normals[i * 3], ny = normals[i * 3 + 1], nz = normals[i * 3 + 2];
+    const axis = Math.abs(nx) > Math.abs(ny) ? (Math.abs(nx) > Math.abs(nz) ? (nx > 0 ? 0 : 1) : (nz > 0 ? 4 : 5)) : (Math.abs(ny) > Math.abs(nz) ? (ny > 0 ? 2 : 3) : (nz > 0 ? 4 : 5));
+    const key = `${Math.floor(points[i * 3] / CLUSTER)},${Math.floor(points[i * 3 + 1] / CLUSTER)},${Math.floor(points[i * 3 + 2] / CLUSTER)},${axis}`;
+    let c = clusters.get(key);
+    if (!c) { c = { id: clusters.size, x: 0, y: 0, z: 0, nx: 0, ny: 0, nz: 0, count: 0, photos: [] }; clusters.set(key, c); }
+    c.x += points[i * 3]; c.y += points[i * 3 + 1]; c.z += points[i * 3 + 2];
+    c.nx += nx; c.ny += ny; c.nz += nz; c.count++;
+    clusterOf[i] = c.id;
+  }
+  const list = [...clusters.values()];
+  const toCam = new THREE.Vector3(), N = new THREE.Vector3();
+  const quality = (f, x, y, z, N) => {
+    toCam.set(f.pos.x - x, f.pos.y - y, f.pos.z - z);
+    const d = toCam.length();
+    if (d < 0.25 || d > 8) return 0;
+    const cos = toCam.dot(N) / d;
+    if (cos < 0.15) return 0;
+    const uv = project(f, x, y, z, 2);
+    if (!uv) return 0;
+    const ex = Math.min(uv[0], f.w - uv[0]) / (f.w * 0.12), ey = Math.min(uv[1], f.h - uv[1]) / (f.h * 0.12);
+    return (cos * cos / Math.max(d, 0.6)) * Math.min(1, ex) * Math.min(1, ey);
+  };
+  for (const c of list) {
+    c.x /= c.count; c.y /= c.count; c.z /= c.count;
+    N.set(c.nx, c.ny, c.nz).normalize();
+    const scored = [];
+    frames.forEach((f, k) => {
+      const q = quality(f, c.x, c.y, c.z, N);
+      if (q > 0 && !hiddenFrom(f, c.x, c.y, c.z)) scored.push([k, q]);
+    });
+    scored.sort((a, b) => b[1] - a[1]);
+    c.photos = scored.slice(0, 4).map((x) => x[0]);
+  }
+  // Points per photo, so each photo is decoded once.
+  const byPhoto = new Map();
+  for (let i = 0; i < n; i++) for (const k of list[clusterOf[i]].photos) {
+    if (!byPhoto.has(k)) byPhoto.set(k, []);
+    byPhoto.get(k).push(i);
+  }
+  const acc = new Float32Array(n * 4);
+  let done = 0;
+  for (const [k, idx] of byPhoto) {
+    if (run !== bakeRun) return null;
+    const f = frames[k];
+    let img;
+    try { img = await pixels(f); } catch { continue; }
+    const d = img.data, iw = img.width;
+    for (const i of idx) {
+      const x = points[i * 3], y = points[i * 3 + 1], z = points[i * 3 + 2];
+      N.set(normals[i * 3], normals[i * 3 + 1], normals[i * 3 + 2]);
+      let w = quality(f, x, y, z, N);
+      if (!w || hiddenFrom(f, x, y, z)) continue;
+      w = w * w * w * w;
+      const uv = project(f, x, y, z, 1);
+      const x0 = uv[0] | 0, y0 = uv[1] | 0, ax = uv[0] - x0, ay = uv[1] - y0;
+      const p00 = (y0 * iw + x0) * 4, p10 = p00 + 4, p01 = p00 + iw * 4, p11 = p01 + 4;
+      for (let ch = 0; ch < 3; ch++) {
+        const v = (d[p00 + ch] * (1 - ax) + d[p10 + ch] * ax) * (1 - ay) + (d[p01 + ch] * (1 - ax) + d[p11 + ch] * ax) * ay;
+        acc[i * 4 + ch] += v * w;
+      }
+      acc[i * 4 + 3] += w;
+    }
+    done++;
+    if (done % 4 === 0) { setProgress(done, byPhoto.size, label); await new Promise((r) => setTimeout(r, 0)); }
+  }
+  const rgb = new Uint8Array(n * 3), seen = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const w = acc[i * 4 + 3];
+    if (w <= 0) continue;
+    rgb[i * 3] = acc[i * 4] / w; rgb[i * 3 + 1] = acc[i * 4 + 1] / w; rgb[i * 3 + 2] = acc[i * 4 + 2] / w;
+    seen[i] = 1;
+  }
+  return { rgb, seen };
+}
+
+function faceNormal(pos, a, b, c, out) {
+  const ax = pos[b * 3] - pos[a * 3], ay = pos[b * 3 + 1] - pos[a * 3 + 1], az = pos[b * 3 + 2] - pos[a * 3 + 2];
+  const bx = pos[c * 3] - pos[a * 3], by = pos[c * 3 + 1] - pos[a * 3 + 1], bz = pos[c * 3 + 2] - pos[a * 3 + 2];
+  out.set(ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx);
+  const len = out.length();
+  if (len > 0) out.divideScalar(len);
+  return len / 2;   // triangle area
+}
+
+// Real furniture shapes: the mesh triangles inside each RoomPlan object's box (not labelled
+// wall, floor or ceiling), coloured from the photos. The RoomPlan boxes stay for tapping.
+async function buildFurniture(mesh, frames, pixels, run) {
+  const { positions: pos, indices, labels } = mesh;
+  const objects = [];
+  house.data.rooms.forEach((room, ri) => (room.objects || []).forEach((o) => {
+    objects.push({ o, inv: mat4(o.matrix).invert(), half: o.size.map((s) => s / 2 + 0.05), group: house.rooms[ri].group, faces: [] });
+  }));
+  if (!objects.length) return;
+  const c = new THREE.Vector3();
+  for (let f = 0; f < labels.length; f++) {
+    if (!FURNITURE_LABELS.has(labels[f])) continue;
+    const a = indices[f * 3], b = indices[f * 3 + 1], d = indices[f * 3 + 2];
+    for (const ob of objects) {
+      c.set((pos[a * 3] + pos[b * 3] + pos[d * 3]) / 3, (pos[a * 3 + 1] + pos[b * 3 + 1] + pos[d * 3 + 1]) / 3, (pos[a * 3 + 2] + pos[b * 3 + 2] + pos[d * 3 + 2]) / 3).applyMatrix4(ob.inv);
+      if (Math.abs(c.x) <= ob.half[0] && Math.abs(c.y) <= ob.half[1] && Math.abs(c.z) <= ob.half[2]) { ob.faces.push(f); break; }
+    }
+  }
+  const kept = objects.filter((ob) => ob.faces.length >= 20);
+  if (!kept.length) return;
+  // One vertex per triangle corner, with the triangle's normal.
+  const total = kept.reduce((s, ob) => s + ob.faces.length, 0);
+  const pts = new Float32Array(total * 9), nrm = new Float32Array(total * 9);
+  const N = new THREE.Vector3();
+  let v = 0;
+  for (const ob of kept) {
+    ob.start = v;
+    for (const f of ob.faces) {
+      const tri = [indices[f * 3], indices[f * 3 + 1], indices[f * 3 + 2]];
+      faceNormal(pos, tri[0], tri[1], tri[2], N);
+      for (const k of tri) {
+        pts.set([pos[k * 3], pos[k * 3 + 1], pos[k * 3 + 2]], v * 3);
+        nrm.set([N.x, N.y, N.z], v * 3);
+        v++;
+      }
+    }
+  }
+  // Normals of a scanned surface can point either way: face them towards where the photos were taken.
+  orientTowardsCameras(pts, nrm, frames);
+  const colours = await colourPoints(pts, nrm, frames, pixels, run, 'Colouring furniture');
+  if (!colours) return;
+  for (const ob of kept) {
+    const count = ob.faces.length * 3;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pts.slice(ob.start * 3, (ob.start + count) * 3), 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(nrm.slice(ob.start * 3, (ob.start + count) * 3), 3));
+    const col = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      const j = ob.start + i;
+      const seen = colours.seen[j];
+      for (let ch = 0; ch < 3; ch++) col[i * 3 + ch] = seen ? Math.pow(colours.rgb[j * 3 + ch] / 255, 2.2) : 0.55;
+    }
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, side: THREE.DoubleSide, clippingPlanes: [cutPlane] }));
+    m.castShadow = true; m.receiveShadow = true;
+    m.userData.meshFurniture = true;
+    ob.group.add(m);
+    house.meshFurniture.push(m);
+    const box = house.pickables.find((p) => p.userData.objectId === ob.o.id);
+    if (box) house.furnitureBoxes.push(box);
+  }
+  showTextures($('tex').checked);
+}
+
+function orientTowardsCameras(pts, nrm, frames) {
+  if (!frames.length) return;
+  const n = pts.length / 3;
+  for (let i = 0; i < n; i++) {
+    const x = pts[i * 3], y = pts[i * 3 + 1], z = pts[i * 3 + 2];
+    let best = Infinity, bx = 0, by = 0, bz = 0;
+    // The nearest of a few photos is enough to tell which side of the surface was seen.
+    for (let k = 0; k < frames.length; k += Math.max(1, frames.length >> 5)) {
+      const p = frames[k].pos, d = (p.x - x) ** 2 + (p.y - y) ** 2 + (p.z - z) ** 2;
+      if (d < best) { best = d; bx = p.x - x; by = p.y - y; bz = p.z - z; }
+    }
+    if (bx * nrm[i * 3] + by * nrm[i * 3 + 1] + bz * nrm[i * 3 + 2] < 0) {
+      nrm[i * 3] *= -1; nrm[i * 3 + 1] *= -1; nrm[i * 3 + 2] *= -1;
+    }
+  }
+}
+
+// Splat preview: flat Gaussians spread evenly over the LiDAR mesh, lying in its surface, each
+// coloured from the photos. Not trained, so softer than real Gaussian splatting, but it shows
+// everything the sensor saw (shelves, plants, lamps), not only RoomPlan's boxes.
+let spark = null;
+async function buildSplats(mesh, frames, pixels, run) {
+  const { positions: pos, indices, labels } = mesh;
+  const nf = labels.length;
+  const areas = new Float32Array(nf);
+  const N = new THREE.Vector3();
+  let totalArea = 0;
+  for (let f = 0; f < nf; f++) {
+    areas[f] = faceNormal(pos, indices[f * 3], indices[f * 3 + 1], indices[f * 3 + 2], N);
+    totalArea += areas[f];
+  }
+  if (totalArea <= 0) return;
+  const spacing = Math.max(SPLAT_SPACING_MIN, Math.sqrt(totalArea / SPLAT_BUDGET));
+  const perArea = 1 / (spacing * spacing);
+  let rnd = 12345;
+  const random = () => { rnd = (rnd + 0x6D2B79F5) | 0; let t = Math.imul(rnd ^ (rnd >>> 15), 1 | rnd); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const count = Math.min(SPLAT_BUDGET, Math.round(totalArea * perArea));
+  const pts = new Float32Array(count * 3), nrm = new Float32Array(count * 3);
+  let made = 0, carry = 0;
+  for (let f = 0; f < nf && made < count; f++) {
+    carry += areas[f] * perArea;
+    if (carry < 1) continue;
+    const a = indices[f * 3], b = indices[f * 3 + 1], c = indices[f * 3 + 2];
+    faceNormal(pos, a, b, c, N);
+    while (carry >= 1 && made < count) {
+      carry -= 1;
+      let u = random(), v = random();
+      if (u + v > 1) { u = 1 - u; v = 1 - v; }
+      for (let ch = 0; ch < 3; ch++) pts[made * 3 + ch] = pos[a * 3 + ch] + u * (pos[b * 3 + ch] - pos[a * 3 + ch]) + v * (pos[c * 3 + ch] - pos[a * 3 + ch]);
+      nrm[made * 3] = N.x; nrm[made * 3 + 1] = N.y; nrm[made * 3 + 2] = N.z;
+      made++;
+    }
+  }
+  const points = pts.subarray(0, made * 3), normals = nrm.subarray(0, made * 3);
+  orientTowardsCameras(points, normals, frames);
+  const colours = await colourPoints(points, normals, frames, pixels, run, 'Making splats');
+  if (!colours || run !== bakeRun) return;
+
+  // Two splat sets, below and above the cutaway height, so Cutaway works as for the model.
+  const cutY = house.floorY + CUT;
+  const center = new THREE.Vector3(), scales = new THREE.Vector3(spacing * 0.8, spacing * 0.8, spacing * 0.08);
+  const quat = new THREE.Quaternion(), color = new THREE.Color(), Z = new THREE.Vector3(0, 0, 1);
+  const fill = (upper) => (splats) => {
+    for (let i = 0; i < made; i++) {
+      if (!colours.seen[i] || (points[i * 3 + 1] >= cutY) !== upper) continue;
+      center.set(points[i * 3], points[i * 3 + 1], points[i * 3 + 2]);
+      N.set(normals[i * 3], normals[i * 3 + 1], normals[i * 3 + 2]);
+      quat.setFromUnitVectors(Z, N);
+      color.setRGB(colours.rgb[i * 3] / 255, colours.rgb[i * 3 + 1] / 255, colours.rgb[i * 3 + 2] / 255);   // Spark takes sRGB values as they are
+      splats.pushSplat(center, scales, quat, 0.95, color);
+    }
+  };
+  if (!spark) { spark = new SparkRenderer({ renderer }); scene.add(spark); }
+  const lower = new SplatMesh({ constructSplats: fill(false) });
+  const upper = new SplatMesh({ constructSplats: fill(true) });
+  await Promise.all([lower.initialized, upper.initialized]);
+  if (run !== bakeRun) { lower.dispose(); upper.dispose(); return; }
+  house.splats = { lower, upper, count: colours.seen.reduce((s, x) => s + x, 0) };
+  scene.add(lower, upper);
+  $('look').hidden = false;
+  setLook(look);
+}
+
+// Model (RoomPlan with photo textures) or Splats (the LiDAR mesh as coloured Gaussians).
+let look = 'model';
+function setLook(l) {
+  look = house?.splats ? l : 'model';
+  $('l-model').setAttribute('aria-pressed', String(look === 'model'));
+  $('l-splats').setAttribute('aria-pressed', String(look === 'splats'));
+  if (!house) return;
+  const splats = look === 'splats';
+  // The model stays in the scene, invisible, so tapping furniture and walking on floors still work.
+  house.group.traverse((o) => {
+    if (!o.material) return;
+    for (const m of [].concat(o.material)) {
+      if (m.userData.shownWhenModel === undefined) m.userData.shownWhenModel = m.visible;
+      m.visible = splats ? false : m.userData.shownWhenModel;
+    }
+  });
+  if (!splats) showTextures($('tex').checked);
+  if (grid) grid.visible = !splats || view !== 'walk';
+  if (house.splats) {
+    house.splats.lower.visible = splats;
+    house.splats.upper.visible = splats && !(renderer.localClippingEnabled && view !== 'walk');
+  }
+  $('tex-wrap').style.display = splats ? 'none' : '';
+}
+$('l-model').addEventListener('click', () => setLook('model'));
+$('l-splats').addEventListener('click', () => setLook('splats'));
+
+function setProgress(done, total, label = 'Building textures from photos') {
   const bar = $('progress');
   if (done < 0) { bar.hidden = true; return; }
   bar.hidden = false;
   $('progress-fill').style.width = (total ? (done / total) * 100 : 0) + '%';
-  $('progress-text').textContent = `Building textures from photos · ${done} of ${total} surfaces`;
+  $('progress-text').textContent = total > 1 ? `${label} · ${done} of ${total}` : label + '…';
 }
 
 // ---------- loading files ----------
-function load(data, isSample, keyframes, getBlob) {
+function load(data, isSample, keyframes, getBlob, plyBuffers = []) {
   if (!data || data.format !== 'house-scanner-scene' || !Array.isArray(data.rooms)) {
     showError('That file is not a House Scanner scene. Choose the house-scene.json file exported from the app.');
     return;
@@ -943,8 +1404,35 @@ function load(data, isSample, keyframes, getBlob) {
   const frames = keyframes?.frames?.filter((f) => f.file && f.transform?.length === 16 && f.intrinsics?.length === 4) || [];
   $('tex-wrap').hidden = !frames.length;
   if (frames.length) {
-    bakeTextures(frames, getBlob).catch((e) => { setProgress(-1); showError('Could not build textures: ' + e.message); });
+    processScan(frames, getBlob, plyBuffers).catch((e) => { setProgress(-1); showError('Could not build textures: ' + e.message); });
   }
+}
+
+// Photos → textures; with the LiDAR mesh also visibility, furniture shapes and splats.
+async function processScan(frameList, getBlob, plyBuffers) {
+  const run = ++bakeRun;
+  const frames = prepareFrames(frameList);
+  const pixels = makePhotoCache(getBlob);
+  let mesh = null;
+  if (plyBuffers.length) {
+    setProgress(0, 1, 'Reading the LiDAR mesh');
+    await new Promise((r) => setTimeout(r, 0));
+    try {
+      mesh = mergeMeshes(plyBuffers.map(parsePLY));
+      if (!mesh.labels.length) mesh = null;
+    } catch (e) {
+      console.warn('LiDAR mesh skipped:', e);
+      mesh = null;
+    }
+    if (mesh) await renderDepthMaps(frames, mesh, run);
+  }
+  if (run !== bakeRun) return;
+  await bakeTextures(frames, pixels, run);
+  if (mesh && run === bakeRun) {
+    await buildFurniture(mesh, frames, pixels, run);
+    if (run === bakeRun) await buildSplats(mesh, frames, pixels, run);
+  }
+  if (run === bakeRun) setProgress(-1);
 }
 
 async function loadZip(buffer, isSample) {
@@ -961,7 +1449,9 @@ async function loadZip(buffer, isSample) {
     if (!entry) throw new Error('missing ' + file);
     return new Blob([await entry.async('arraybuffer')], { type: 'image/jpeg' });
   };
-  load(scene, isSample, keyframes, getBlob);
+  const plyEntries = Object.values(zip.files).filter((f) => !f.dir && f.name.startsWith(prefix + 'mesh/') && f.name.endsWith('.ply'));
+  const plyBuffers = await Promise.all(plyEntries.map((f) => f.async('arraybuffer')));
+  load(scene, isSample, keyframes, getBlob, plyBuffers);
 }
 
 async function readFile(file) {
@@ -1019,7 +1509,16 @@ async function loadSample() {
   const keyframes = await (await get('sample/keyframes.json')).json();
   load(JSON.parse($('sample-data').textContent), true, keyframes, async (file) => (await get('sample/' + file)).blob());
 }
-loadSample().catch(() => load(JSON.parse($('sample-data').textContent), true));
+// ?zip=<url> opens a house-scan.zip from the same server (handy for testing a real scan).
+const zipParam = new URLSearchParams(location.search).get('zip');
+if (zipParam && /^[\w./-]+\.zip$/.test(zipParam)) {
+  setProgress(0, 1, 'Loading scan');
+  fetch(zipParam).then((r) => { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
+    .then((b) => loadZip(b, false))
+    .catch(() => { setProgress(-1); showError('Could not load ' + zipParam); loadSample().catch(() => load(JSON.parse($('sample-data').textContent), true)); });
+} else {
+  loadSample().catch(() => load(JSON.parse($('sample-data').textContent), true));
+}
 </script>
 
 </body>

@@ -16,6 +16,15 @@ Views:
 
 > The textured example needs the page to be served over http (for example `python3 -m http.server` in this folder). Opened straight from disk, the browser blocks loading the sample photos and the example shows without textures. Your own ZIP works either way.
 
+## Model and Splats
+
+When the ZIP contains the LiDAR mesh (`mesh/*.ply`, from the LiDAR walk), two more things happen:
+
+- **Better textures and real furniture (Model).** The mesh's depth is rendered from every photo's camera on the GPU, so each photo only colours what it really sees: furniture no longer gets painted onto the wall behind it. Furniture is shown with its real scanned shape (the mesh inside each RoomPlan box), coloured from the photos. The RoomPlan boxes stay underneath for tapping and sizes.
+- **Splats.** A *Splats* button appears: the whole LiDAR mesh as up to 600,000 flat Gaussian splats, each coloured from the photos that see it, rendered with [Spark](https://sparkjs.dev). It shows everything the sensor saw (shelves, plants, lamps), not only RoomPlan's walls and boxes. It is an instant preview made in the browser, not trained Gaussian splatting, so it is softer than a trained result. Cutaway, Walk and tapping work in both looks.
+
+To test a scan without picking the file, serve this folder (`python3 -m http.server`) and open `/?zip=path/to/house-scan.zip`.
+
 ## How the textures are made
 
 Every wall and floor from RoomPlan is a flat plane. For each texel (80 per metre), the viewer works out its 3D position and projects it into the photos using the camera position and lens data ARKit recorded for each photo. It blends the photos that see that spot best: facing it, close by, not near the photo's edge, and not hidden behind another wall. Furniture stays as plain blocks.
