@@ -84,6 +84,15 @@ struct ScanView: View {
 
             Spacer()
 
+            if controller.meshFaceCount > 0 {
+                Label(controller.meshFaceCount >= 1000 ? "\(controller.meshFaceCount / 1000)k" : "\(controller.meshFaceCount)",
+                      systemImage: "cube.transparent")
+                    .font(.subheadline.weight(.semibold))
+                    .monospacedDigit()
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.ultraThinMaterial, in: Capsule())
+            }
             if controller.photoCount > 0 {
                 Label("\(controller.photoCount)", systemImage: "camera.fill")
                     .font(.subheadline.weight(.semibold))

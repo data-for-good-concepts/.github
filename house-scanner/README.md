@@ -1,5 +1,14 @@
 # House Scanner
 
+```
+iPhone app (LiDAR)                          render-server/ (Cloud Run)                     Any screen
+RoomPlan rooms ─┐                           process once:                                   thin client:
+Photos + poses  ├─ house-scan.zip ────────▶  textures for walls and floors from photos       shows JPEG frames,
+LiDAR mesh      │  (manifest + README        furniture cut out of the LiDAR mesh, coloured  sends touches back
+Video + poses   ┘   for Claude)              → model.glb + annotations.json
+                                             render live in headless Chromium ─────────────▶
+```
+
 An iPhone app that scans your home with the LiDAR sensor using Apple's RoomPlan.
 
 - Scan one room, or several rooms in a row. Rooms scanned in one go are joined into a single 3D model of the house.
@@ -7,6 +16,9 @@ An iPhone app that scans your home with the LiDAR sensor using Apple's RoomPlan.
 - Floor area, ceiling height, and counts of doors, windows and furniture
 - View the model in 3D or place it in AR on a table
 - **Records the camera while scanning**: an MP4 video plus sharp still photos with the exact camera position, used to put real textures on walls and floors in the web viewer. A yellow **Hold still for a photo** sign appears whenever the phone reaches a new viewpoint, and blurry photos are thrown away.
+- **LiDAR mesh**: ARKit's triangle mesh (with wall/floor/table/seat/… labels) is captured alongside RoomPlan and saved per session as PLY.
+- **Package for Claude**: `house-scan.zip` bundles the room model, photos, mesh and camera poses with a `manifest.json` and a `README.md` that documents every file and coordinate convention (see `HouseScanner/PackageREADME.md`). An example is in `samples/house-scan-sample.zip`.
+- **Render in the cloud**: uploads the package to your render server and shows the live rendering (see `render-server/README.md`). Set the server address and token under Settings (gear icon).
 - **Add rooms later**: open a scan and tap *Add rooms to this scan*. The phone recognises the place from the saved ARKit world map and new rooms join onto the earlier ones.
 - Export as **JSON** (for 3D web apps like three.js), **DXF** (CAD floor plan with 3D walls) or **USDZ** (3D model). Send them by AirDrop to your Mac. They're also in the Files app under *On My iPhone → House Scanner*.
 

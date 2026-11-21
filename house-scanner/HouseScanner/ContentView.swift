@@ -6,6 +6,7 @@ struct ContentView: View {
     @State private var path: [SavedScan] = []
     @State private var showingScanner = false
     @State private var justSaved: SavedScan?
+    @State private var showingSettings = false
 
     private let isSupported = RoomCaptureSession.isSupported
 
@@ -19,6 +20,17 @@ struct ContentView: View {
                 }
             }
             .navigationTitle("House Scanner")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showingSettings = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .accessibilityLabel("Settings")
+                }
+            }
+            .sheet(isPresented: $showingSettings) { SettingsView() }
             .navigationDestination(for: SavedScan.self) { scan in
                 ScanDetailView(scan: scan)
             }

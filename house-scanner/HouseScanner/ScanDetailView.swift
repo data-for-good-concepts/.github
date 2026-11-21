@@ -19,6 +19,8 @@ struct ScanDetailView: View {
     @State private var newName = ""
     @State private var showingDeleteConfirm = false
     @State private var showingAddRooms = false
+    @State private var showingCloud = false
+    @AppStorage(CloudSettings.serverKey) private var cloudServer = ""
 
     init(scan: SavedScan) {
         initialScan = scan
@@ -45,6 +47,19 @@ struct ScanDetailView: View {
                 Text("Floor plan")
             } footer: {
                 if let loadError { Text(loadError).foregroundStyle(.red) }
+            }
+
+            Section {
+                Button {
+                    showingCloud = true
+                } label: {
+                    Label("Render in the cloud", systemImage: "cloud")
+                }
+                .disabled(!scan.hasPackage || cloudServer.isEmpty)
+            } footer: {
+                Text(cloudServer.isEmpty
+                     ? "Add your render server in Settings (gear icon on the scans list) to render this scan in the cloud."
+                     : "Uploads the scan (photos, LiDAR mesh, room model) and shows a live, textured 3D rendering made on your server.")
             }
 
             Section {
@@ -108,7 +123,7 @@ struct ScanDetailView: View {
             Section {
                 if scan.hasPackage {
                     ShareLink(item: scan.packageURL) {
-                        exportLabel("Scan with textures", "ZIP · open in the web viewer for textured walls and floors", "photo.on.rectangle")
+                        exportLabel("Full scan package", "ZIP · room model, photos, LiDAR mesh, with a README for Claude", "shippingbox")
                     }
                 }
                 ShareLink(item: scan.sceneJSONURL) {
@@ -171,6 +186,9 @@ struct ScanDetailView: View {
                 VideoPlayer(player: AVPlayer(url: videoURL))
                     .ignoresSafeArea()
             }
+        }
+        .fullScreenCover(isPresented: $showingCloud) {
+            CloudRenderView(scan: scan)
         }
         .fullScreenCover(isPresented: $showingAddRooms, onDismiss: load) {
             ScanView(continuing: scan) { _ in }

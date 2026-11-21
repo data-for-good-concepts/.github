@@ -21,8 +21,9 @@ struct ScanMeta: Codable, Hashable {
 /// - floor-plan.dxf       floor plan for CAD programs (with 3D walls)
 /// - video.mp4, video-2.mp4…, video-poses*.json   camera recording of each session
 /// - keyframes/, keyframes.json   still photos from all sessions (see FrameRecorder)
+/// - mesh/mesh-N.ply      ARKit LiDAR mesh of each session, with per-face classification
 /// - worldmap.arexperience        ARKit's map of the place, for adding rooms later
-/// - house-scan.zip       house-scene.json + keyframes, for the textured web viewer
+/// - house-scan.zip       everything except the videos, with manifest.json and README.md (see PackageBuilder)
 struct SavedScan: Identifiable, Hashable {
     let folder: URL
     var meta: ScanMeta
@@ -158,7 +159,9 @@ final class ScanStore: ObservableObject {
         defer { try? fm.removeItem(at: capture) }
 
         let suffix = session == 1 ? "" : "-\(session)"
-        for (from, to) in [("video.mp4", "video\(suffix).mp4"), ("video-poses.json", "video-poses\(suffix).json")] {
+        try? fm.createDirectory(at: scan.folder.appending(path: "mesh"), withIntermediateDirectories: true)
+        for (from, to) in [("video.mp4", "video\(suffix).mp4"), ("video-poses.json", "video-poses\(suffix).json"),
+                           ("mesh.ply", "mesh/mesh-\(session).ply")] {
             let source = capture.appending(path: from), target = scan.folder.appending(path: to)
             guard fm.fileExists(atPath: source.path) else { continue }
             try? fm.removeItem(at: target)
@@ -195,31 +198,10 @@ final class ScanStore: ObservableObject {
         try DXFExporter.string(rooms: rooms).write(to: scan.dxfURL, atomically: true, encoding: .utf8)
     }
 
-    /// Zips house-scene.json, keyframes.json and the keyframe photos into house-scan.zip.
+    /// Builds house-scan.zip (see PackageBuilder).
     func makePackage(for scan: SavedScan) throws {
-        let fm = FileManager.default
-        guard fm.fileExists(atPath: scan.keyframesURL.path) else { return }
-        let staging = fm.temporaryDirectory.appending(path: "package-\(UUID().uuidString)", directoryHint: .isDirectory)
-        let root = staging.appending(path: "house-scan", directoryHint: .isDirectory)
-        try fm.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? fm.removeItem(at: staging) }
-
-        for item in ["house-scene.json", "keyframes.json", "keyframes"] {
-            try fm.copyItem(at: scan.folder.appending(path: item), to: root.appending(path: item))
-        }
-
-        // NSFileCoordinator's .forUploading option hands back a zip of the folder.
-        var coordinatorError: NSError?
-        var copyError: Error?
-        NSFileCoordinator().coordinate(readingItemAt: root, options: [.forUploading], error: &coordinatorError) { zipURL in
-            do {
-                if fm.fileExists(atPath: scan.packageURL.path) { try fm.removeItem(at: scan.packageURL) }
-                try fm.copyItem(at: zipURL, to: scan.packageURL)
-            } catch {
-                copyError = error
-            }
-        }
-        if let error = coordinatorError ?? copyError { throw error }
+        guard FileManager.default.fileExists(atPath: scan.sceneJSONURL.path) else { return }
+        try PackageBuilder.build(for: scan)
     }
 
     // MARK: - Reading and managing

@@ -30,6 +30,8 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureViewDelegate 
     @Published var relocalizationMessage = "Starting the camera…"
     /// True once ARKit has seen enough of the place for this scan to be continued later.
     @Published var mapIsGoodForContinuing = false
+    /// Triangles in ARKit's LiDAR mesh so far (shown so you can see the mesh is being captured).
+    @Published var meshFaceCount = 0
 
     let arSession = ARSession()
     let isContinuing: Bool
@@ -39,6 +41,8 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureViewDelegate 
     private var relocalizedSince: TimeInterval?
     private var photoSavedUntil: TimeInterval = 0
     private let haptics = UIImpactFeedbackGenerator(style: .light)
+    private var meshAnchors: [UUID: ARMeshAnchor] = [:]
+    private var lastMeshCheck: TimeInterval = 0
 
     private(set) lazy var captureView: RoomCaptureView = {
         let view = RoomCaptureView(frame: .zero, arSession: arSession)
@@ -87,12 +91,34 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureViewDelegate 
         captureView.captureSession.run(configuration: RoomCaptureSession.Configuration())
         phase = .scanning
         startRecordingIfNeeded()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.ensureSceneReconstruction() }
+    }
+
+    /// RoomPlan runs the AR session with its own settings. If those don't include ARKit's LiDAR
+    /// mesh, switch it on without resetting tracking, so RoomPlan carries on undisturbed.
+    private func ensureSceneReconstruction() {
+        guard phase == .scanning,
+              let configuration = arSession.configuration as? ARWorldTrackingConfiguration,
+              configuration.sceneReconstruction.isEmpty,
+              ARWorldTrackingConfiguration.supportsSceneReconstruction(.meshWithClassification) else { return }
+        configuration.sceneReconstruction = .meshWithClassification
+        arSession.run(configuration)
+    }
+
+    /// Keeps the latest version of every mesh piece, including ones RoomPlan may drop between rooms.
+    private func collectMesh() {
+        for anchor in arSession.currentFrame?.anchors ?? [] {
+            if let mesh = anchor as? ARMeshAnchor { meshAnchors[mesh.identifier] = mesh }
+        }
+        let faces = meshAnchors.values.reduce(0) { $0 + $1.geometry.faces.count }
+        if faces != meshFaceCount { meshFaceCount = faces }
     }
 
     func finishRoom() {
         guard phase == .scanning else { return }
         phase = .processing
         captureHint = .none
+        collectMesh()
         // Keep the AR session running so the next room lines up with this one.
         captureView.captureSession.stop(pauseARSession: false)
     }
@@ -123,6 +149,11 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureViewDelegate 
         if phase == .relocalizing {
             updateRelocalization(frame)
             return
+        }
+
+        if frame.timestamp - lastMeshCheck > 1 {
+            lastMeshCheck = frame.timestamp
+            collectMesh()
         }
 
         guard let recorder else { return }
@@ -197,7 +228,16 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureViewDelegate 
         displayLink = nil
         guard let recorder else { return nil }
         self.recorder = nil
-        return await recorder.finish()
+        collectMesh()
+        let folder = await recorder.finish()
+        if !meshAnchors.isEmpty {
+            do {
+                try MeshExporter.writePLY(anchors: Array(meshAnchors.values), to: folder.appending(path: "mesh.ply"))
+            } catch {
+                print("Could not save the LiDAR mesh: \(error)")
+            }
+        }
+        return folder
     }
 
     /// ARKit's map of the place, saved so this scan can be continued later.
