@@ -91,18 +91,26 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureViewDelegate 
         captureView.captureSession.run(configuration: RoomCaptureSession.Configuration())
         phase = .scanning
         startRecordingIfNeeded()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.ensureSceneReconstruction() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.ensureLiDARCapture() }
     }
 
     /// RoomPlan runs the AR session with its own settings. If those don't include ARKit's LiDAR
-    /// mesh, switch it on without resetting tracking, so RoomPlan carries on undisturbed.
-    private func ensureSceneReconstruction() {
+    /// mesh and per-frame depth, switch them on without resetting tracking, so RoomPlan carries on.
+    private func ensureLiDARCapture() {
         guard phase == .scanning,
-              let configuration = arSession.configuration as? ARWorldTrackingConfiguration,
-              configuration.sceneReconstruction.isEmpty,
-              ARWorldTrackingConfiguration.supportsSceneReconstruction(.meshWithClassification) else { return }
-        configuration.sceneReconstruction = .meshWithClassification
-        arSession.run(configuration)
+              let configuration = arSession.configuration as? ARWorldTrackingConfiguration else { return }
+        var changed = false
+        if configuration.sceneReconstruction.isEmpty,
+           ARWorldTrackingConfiguration.supportsSceneReconstruction(.meshWithClassification) {
+            configuration.sceneReconstruction = .meshWithClassification
+            changed = true
+        }
+        if !configuration.frameSemantics.contains(.sceneDepth),
+           ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
+            configuration.frameSemantics.insert(.sceneDepth)
+            changed = true
+        }
+        if changed { arSession.run(configuration) }
     }
 
     /// Keeps the latest version of every mesh piece, including ones RoomPlan may drop between rooms.

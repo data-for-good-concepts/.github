@@ -1,4 +1,7 @@
-# House Renderer (Cloud Run)
+# House Renderer (Cloud Run): archived
+
+> **Archived.** This automatic pipeline was replaced by a simpler approach: the app exports a complete scan package, and Claude builds the rendering from it (see `../../HouseScanner/PackageREADME.md`). The cloud upload was removed from the app. The code is kept here for reference: the photo-projection texturing, mesh filtering, and streaming a headless-browser rendering to a thin client may be useful again.
+
 
 Takes the `house-scan.zip` package from the House Scanner app and turns it into a textured 3D model. It then renders that model live and streams the picture to a thin client (the app's web view, or any browser). The client only displays images and sends touches back, so a phone with no 3D work to do can still show a heavy model smoothly.
 

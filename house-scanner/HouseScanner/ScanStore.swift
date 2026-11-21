@@ -20,7 +20,7 @@ struct ScanMeta: Codable, Hashable {
 /// - house-scene.json     clean JSON for building 3D scenes in JavaScript (three.js)
 /// - floor-plan.dxf       floor plan for CAD programs (with 3D walls)
 /// - video.mp4, video-2.mp4…, video-poses*.json   camera recording of each session
-/// - keyframes/, keyframes.json   still photos from all sessions (see FrameRecorder)
+/// - keyframes/, depth/, confidence/, keyframes.json   full-resolution photos with LiDAR depth, from all sessions (see FrameRecorder)
 /// - mesh/mesh-N.ply      ARKit LiDAR mesh of each session, with per-face classification
 /// - worldmap.arexperience        ARKit's map of the place, for adding rooms later
 /// - house-scan.zip       everything except the videos, with manifest.json and README.md (see PackageBuilder)
@@ -173,19 +173,33 @@ final class ScanStore: ObservableObject {
         let newFrames = (try? decoder.decode(FrameRecorder.StoredFrames.self, from: Data(contentsOf: capture.appending(path: "keyframes.json"))))?.frames ?? []
         guard !newFrames.isEmpty else { return }
 
-        try? fm.createDirectory(at: scan.folder.appending(path: "keyframes"), withIntermediateDirectories: true)
+        for sub in ["keyframes", "depth", "confidence"] {
+            try? fm.createDirectory(at: scan.folder.appending(path: sub), withIntermediateDirectories: true)
+        }
+        // Moves one file of a photo to its new number; returns the new name, or nil if it wasn't there.
+        func move(_ file: String?, to folder: String, ext: String, number: String) -> String? {
+            guard let file else { return nil }
+            let name = "\(folder)/\(number).\(ext)"
+            guard (try? fm.moveItem(at: capture.appending(path: file), to: scan.folder.appending(path: name))) != nil else { return nil }
+            return name
+        }
         var number = frames.count
         for frame in newFrames {
-            guard let file = frame.file else { continue }
-            var name: String
+            var label: String
             repeat {
                 number += 1
-                name = String(format: "keyframes/%04d.jpg", number)
-            } while fm.fileExists(atPath: scan.folder.appending(path: name).path)
-            guard (try? fm.moveItem(at: capture.appending(path: file), to: scan.folder.appending(path: name))) != nil else { continue }
-            frames.append(FrameRecorder.Frame(
-                file: name, time: frame.time, width: frame.width, height: frame.height,
-                intrinsics: frame.intrinsics, transform: frame.transform))
+                label = String(format: "%04d", number)
+            } while fm.fileExists(atPath: scan.folder.appending(path: "keyframes/\(label).jpg").path)
+            guard let image = move(frame.file, to: "keyframes", ext: "jpg", number: label) else { continue }
+            var moved = FrameRecorder.Frame(file: image, time: frame.time, width: frame.width, height: frame.height,
+                                        intrinsics: frame.intrinsics, transform: frame.transform)
+            moved.depthFile = move(frame.depthFile, to: "depth", ext: "png", number: label)
+            moved.confidenceFile = move(frame.confidenceFile, to: "confidence", ext: "png", number: label)
+            moved.exposureDuration = frame.exposureDuration
+            moved.exposureOffset = frame.exposureOffset
+            moved.ambientIntensity = frame.ambientIntensity
+            moved.colorTemperature = frame.colorTemperature
+            frames.append(moved)
         }
         let file = FrameRecorder.FrameFile(format: "house-scanner-keyframes", frames: frames)
         try? JSONEncoder().encode(file).write(to: scan.keyframesURL)
@@ -201,7 +215,9 @@ final class ScanStore: ObservableObject {
     /// Builds house-scan.zip (see PackageBuilder).
     func makePackage(for scan: SavedScan) throws {
         guard FileManager.default.fileExists(atPath: scan.sceneJSONURL.path) else { return }
-        try PackageBuilder.build(for: scan)
+        _ = try PackageBuilder.build(for: scan)
+        // A package with video from before this change would be out of date.
+        try? FileManager.default.removeItem(at: scan.folder.appending(path: "house-scan-with-video.zip"))
     }
 
     // MARK: - Reading and managing

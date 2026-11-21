@@ -19,8 +19,8 @@ struct ScanDetailView: View {
     @State private var newName = ""
     @State private var showingDeleteConfirm = false
     @State private var showingAddRooms = false
-    @State private var showingCloud = false
-    @AppStorage(CloudSettings.serverKey) private var cloudServer = ""
+    @State private var videoPackageURL: URL?
+    @State private var preparingVideoPackage = false
 
     init(scan: SavedScan) {
         initialScan = scan
@@ -47,19 +47,6 @@ struct ScanDetailView: View {
                 Text("Floor plan")
             } footer: {
                 if let loadError { Text(loadError).foregroundStyle(.red) }
-            }
-
-            Section {
-                Button {
-                    showingCloud = true
-                } label: {
-                    Label("Render in the cloud", systemImage: "cloud")
-                }
-                .disabled(!scan.hasPackage || cloudServer.isEmpty)
-            } footer: {
-                Text(cloudServer.isEmpty
-                     ? "Add your render server in Settings (gear icon on the scans list) to render this scan in the cloud."
-                     : "Uploads the scan (photos, LiDAR mesh, room model) and shows a live, textured 3D rendering made on your server.")
             }
 
             Section {
@@ -123,7 +110,27 @@ struct ScanDetailView: View {
             Section {
                 if scan.hasPackage {
                     ShareLink(item: scan.packageURL) {
-                        exportLabel("Full scan package", "ZIP · room model, photos, LiDAR mesh, with a README for Claude", "shippingbox")
+                        exportLabel("Scan package for Claude", "ZIP · rooms, full-resolution photos, LiDAR depth and mesh, camera poses, README", "shippingbox")
+                    }
+                }
+                if !videos.isEmpty {
+                    if let videoPackageURL {
+                        ShareLink(item: videoPackageURL) {
+                            exportLabel("Package with video", "ZIP · the above plus every session's video (large)", "film.stack")
+                        }
+                    } else {
+                        Button {
+                            prepareVideoPackage(scan)
+                        } label: {
+                            HStack {
+                                exportLabel("Package with video", "Tap to prepare · adds every session's video (large)", "film.stack")
+                                if preparingVideoPackage {
+                                    Spacer()
+                                    ProgressView()
+                                }
+                            }
+                        }
+                        .disabled(preparingVideoPackage)
                     }
                 }
                 ShareLink(item: scan.sceneJSONURL) {
@@ -138,7 +145,7 @@ struct ScanDetailView: View {
             } header: {
                 Text("Export")
             } footer: {
-                Text("Use AirDrop to send files to your Mac. All files are also in the Files app under On My iPhone → House Scanner.")
+                Text("Give the scan package to Claude to build a photoreal 3D rendering: its README explains every file. Send it with AirDrop, or save it to Google Drive or Dropbox from the share sheet. All files are also in the Files app under On My iPhone → House Scanner.")
             }
 
             Section("Summary") {
@@ -187,9 +194,6 @@ struct ScanDetailView: View {
                     .ignoresSafeArea()
             }
         }
-        .fullScreenCover(isPresented: $showingCloud) {
-            CloudRenderView(scan: scan)
-        }
         .fullScreenCover(isPresented: $showingAddRooms, onDismiss: load) {
             ScanView(continuing: scan) { _ in }
                 .environmentObject(store)
@@ -204,6 +208,16 @@ struct ScanDetailView: View {
                 store.delete(scan)
                 dismiss()
             }
+        }
+    }
+
+    private func prepareVideoPackage(_ scan: SavedScan) {
+        preparingVideoPackage = true
+        Task {
+            let url = await Task.detached { try? PackageBuilder.build(for: scan, includeVideo: true) }.value
+            preparingVideoPackage = false
+            videoPackageURL = url
+            if url == nil { loadError = "Couldn't prepare the package with video. Check there is enough free space on the phone." }
         }
     }
 

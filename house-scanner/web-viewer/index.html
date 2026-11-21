@@ -657,9 +657,11 @@ function prepareFrames(list) {
     const m = new THREE.Matrix4().fromArray(f.transform);
     const e = m.elements;
     const inv = m.clone().invert().elements;
+    // Full-resolution photos are scaled to 960 px wide as they load, to keep memory low on phones.
+    const s = Math.min(1, 960 / f.width);
     return {
-      file: f.file, w: f.width, h: f.height,
-      fx: f.intrinsics[0], fy: f.intrinsics[1], cx: f.intrinsics[2], cy: f.intrinsics[3],
+      file: f.file, w: Math.round(f.width * s), h: Math.round(f.height * s),
+      fx: f.intrinsics[0] * s, fy: f.intrinsics[1] * s, cx: f.intrinsics[2] * s, cy: f.intrinsics[3] * s,
       inv, pos: new THREE.Vector3(e[12], e[13], e[14]),
     };
   });
@@ -716,9 +718,9 @@ async function bakeTextures(frameList, getBlob) {
     const blob = await getBlob(f.file);
     const bmp = await createImageBitmap(blob);
     const c = document.createElement('canvas');
-    c.width = bmp.width; c.height = bmp.height;
+    c.width = f.w; c.height = f.h;
     const g = c.getContext('2d', { willReadFrequently: true });
-    g.drawImage(bmp, 0, 0);
+    g.drawImage(bmp, 0, 0, f.w, f.h);
     bmp.close?.();
     const data = g.getImageData(0, 0, c.width, c.height);
     cache.set(f.file, data);

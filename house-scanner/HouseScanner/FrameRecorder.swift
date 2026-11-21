@@ -1,13 +1,17 @@
 import ARKit
 import AVFoundation
 import CoreImage
+import ImageIO
 
 /// Records the camera while scanning, in the same AR session as RoomPlan, so every image
 /// lines up with the scanned walls:
 /// - video.mp4          the camera feed (HEVC, full sensor resolution)
 /// - video-poses.json   camera position and lens data for every video frame
-/// - keyframes/*.jpg    sharp still photos, taken when the phone has reached a new viewpoint and is held still
-/// - keyframes.json     camera position and lens data for every still photo (used for textures)
+/// - keyframes/*.jpg    sharp still photos at full sensor resolution, taken when the phone has reached a
+///                      new viewpoint and is held still
+/// - depth/*.png        LiDAR depth for each photo (16-bit, millimetres, 0 = no reading)
+/// - confidence/*.png   ARKit's confidence in each depth reading (0 low, 1 medium, 2 high)
+/// - keyframes.json     camera position, lens, exposure and file names for every still photo
 ///
 /// Call every method on the main thread.
 final class FrameRecorder {
@@ -20,6 +24,15 @@ final class FrameRecorder {
         let intrinsics: [Float]
         /// Camera-to-world transform, 16 numbers, column-major (ARKit convention).
         let transform: [Float]
+        var depthFile: String? = nil
+        var confidenceFile: String? = nil
+        /// Seconds the sensor was exposed for this image.
+        var exposureDuration: Double? = nil
+        /// Exposure compensation ARKit applied, in EV.
+        var exposureOffset: Float? = nil
+        /// ARKit's light estimate, when available (lumens, ~1000 = neutral; Kelvin).
+        var ambientIntensity: Float? = nil
+        var colorTemperature: Float? = nil
     }
 
     struct FrameFile: Encodable {
@@ -29,6 +42,7 @@ final class FrameRecorder {
             "transform is the camera-to-world matrix (column-major) in the same world space as house-scene.json.",
             "ARKit camera convention: the camera looks down -Z, +Y is up, +X is right, in the sensor's landscape image orientation.",
             "Project a world point P: (X, Y, Z) = inverse(transform) * P; u = fx * X / -Z + cx; v = fy * -Y / -Z + cy (pixels, origin top-left).",
+            "depthFile: 16-bit PNG, millimetres, 0 = no reading, 256x192 (scale to the image size; same camera). confidenceFile: 8-bit PNG, 0 low, 1 medium, 2 high.",
         ]
         let frames: [Frame]
     }
@@ -68,11 +82,11 @@ final class FrameRecorder {
     private let jpegQueue = DispatchQueue(label: "house-scanner.keyframes", qos: .userInitiated)
     private let ciContext = CIContext()
 
-    private static let keyframeWidth: CGFloat = 960
-    private static let maxKeyframes = 500
+    private static let maxKeyframes = 600
     /// A new photo is wanted after moving this far or turning this much since the last one.
-    private static let newViewDistance: Float = 0.45
-    private static let newViewAngle: Float = 0.35      // about 20°
+    /// Dense enough for photoreal reconstruction (Gaussian splatting) when combined with the video.
+    private static let newViewDistance: Float = 0.3
+    private static let newViewAngle: Float = 0.26      // about 15°
     /// "Still" means slower than this, for at least `stillDuration` seconds.
     private static let stillMoveSpeed: Float = 0.2      // m/s
     private static let stillTurnSpeed: Float = 0.3      // rad/s
@@ -80,7 +94,9 @@ final class FrameRecorder {
 
     init() throws {
         folder = FileManager.default.temporaryDirectory.appending(path: "capture-\(UUID().uuidString)", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: folder.appending(path: "keyframes"), withIntermediateDirectories: true)
+        for sub in ["keyframes", "depth", "confidence"] {
+            try FileManager.default.createDirectory(at: folder.appending(path: sub), withIntermediateDirectories: true)
+        }
     }
 
     // MARK: - Per frame
@@ -178,13 +194,27 @@ final class FrameRecorder {
     private func saveKeyframe(_ frame: ARFrame) {
         encodingKeyframe = true
         let buffer = frame.capturedImage
-        let sourceWidth = CGFloat(CVPixelBufferGetWidth(buffer))
-        let scale = Self.keyframeWidth / sourceWidth
-        let name = String(format: "keyframes/%04d.jpg", nextIndex + 1)
-        let intrinsics = frame.camera.intrinsics
-        let transform = frame.camera.transform
+        let number = String(format: "%04d", nextIndex + 1)
+        let name = "keyframes/\(number).jpg"
+        let camera = frame.camera
+        let intrinsics = camera.intrinsics
+        let transform = camera.transform
         let time = frame.timestamp - (startTime ?? frame.timestamp)
-        let url = folder.appending(path: name)
+        let folder = self.folder
+
+        // Depth buffers are reused by ARKit, so copy them now.
+        let depth = frame.sceneDepth.flatMap { Self.copyPlane($0.depthMap) }
+        let confidence = frame.sceneDepth?.confidenceMap.flatMap { Self.copyPlane($0) }
+
+        var record = Frame(
+            file: name, time: time,
+            width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer),
+            intrinsics: Self.intrinsics(intrinsics, scale: 1),
+            transform: Self.flatten(transform))
+        record.exposureDuration = camera.exposureDuration
+        record.exposureOffset = camera.exposureOffset
+        record.ambientIntensity = frame.lightEstimate.map { Float($0.ambientIntensity) }
+        record.colorTemperature = frame.lightEstimate.map { Float($0.ambientColorTemperature) }
 
         jpegQueue.async { [ciContext] in
             var saved = false
@@ -207,20 +237,22 @@ final class FrameRecorder {
             self.sharpnessHistory.append(sharpness)
             if recent.count >= 5, sharpness < recent[recent.count / 2] * 0.55 { return }
 
-            let image = CIImage(cvPixelBuffer: buffer)
-                .applyingFilter("CILanczosScaleTransform", parameters: [kCIInputScaleKey: scale, kCIInputAspectRatioKey: 1])
-            let extent = image.extent.integral
-            let cropped = image.cropped(to: extent).transformed(by: CGAffineTransform(translationX: -extent.minX, y: -extent.minY))
-            let options = [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.82]
-            guard let data = ciContext.jpegRepresentation(of: cropped, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!, options: options),
-                  (try? data.write(to: url)) != nil else { return }
+            // Full sensor resolution, high quality: photoreal reconstruction needs every pixel.
+            let options = [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 0.9]
+            guard let data = ciContext.jpegRepresentation(of: CIImage(cvPixelBuffer: buffer),
+                                                          colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!, options: options),
+                  (try? data.write(to: folder.appending(path: name))) != nil else { return }
 
-            let realScale = Float(extent.width / sourceWidth)
-            self.keyframes.append(Frame(
-                file: name, time: time,
-                width: Int(extent.width), height: Int(extent.height),
-                intrinsics: Self.intrinsics(intrinsics, scale: realScale),
-                transform: Self.flatten(transform)))
+            if let depth, let png = Self.depthPNG(depth) {
+                let depthName = "depth/\(number).png"
+                if (try? png.write(to: folder.appending(path: depthName))) != nil { record.depthFile = depthName }
+            }
+            if let confidence, let png = Self.grayPNG(confidence) {
+                let confidenceName = "confidence/\(number).png"
+                if (try? png.write(to: folder.appending(path: confidenceName))) != nil { record.confidenceFile = confidenceName }
+            }
+
+            self.keyframes.append(record)
             saved = true
         }
     }
@@ -260,6 +292,67 @@ final class FrameRecorder {
         let fa = simd_normalize(simd_make_float3(a.columns.2))
         let fb = simd_normalize(simd_make_float3(b.columns.2))
         return acos(min(1, max(-1, simd_dot(fa, fb))))
+    }
+
+    /// A copy of a single-plane pixel buffer: width, height, bytes per pixel, tightly packed rows.
+    struct Plane {
+        let width: Int
+        let height: Int
+        let bytesPerPixel: Int
+        let data: Data
+    }
+
+    private static func copyPlane(_ buffer: CVPixelBuffer) -> Plane? {
+        CVPixelBufferLockBaseAddress(buffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(buffer) else { return nil }
+        let width = CVPixelBufferGetWidth(buffer), height = CVPixelBufferGetHeight(buffer)
+        let stride = CVPixelBufferGetBytesPerRow(buffer)
+        let bpp: Int
+        switch CVPixelBufferGetPixelFormatType(buffer) {
+        case kCVPixelFormatType_DepthFloat32: bpp = 4
+        case kCVPixelFormatType_OneComponent8: bpp = 1
+        default: return nil
+        }
+        var data = Data(capacity: width * height * bpp)
+        for row in 0..<height {
+            data.append(base.advanced(by: row * stride).assumingMemoryBound(to: UInt8.self), count: width * bpp)
+        }
+        return Plane(width: width, height: height, bytesPerPixel: bpp, data: data)
+    }
+
+    /// Float metres → 16-bit PNG in millimetres (0 = no reading).
+    private static func depthPNG(_ plane: Plane) -> Data? {
+        guard plane.bytesPerPixel == 4 else { return nil }
+        var millimetres = [UInt16](repeating: 0, count: plane.width * plane.height)
+        plane.data.withUnsafeBytes { raw in
+            let metres = raw.bindMemory(to: Float32.self)
+            for i in 0..<millimetres.count {
+                let m = metres[i]
+                millimetres[i] = m.isFinite && m > 0 ? UInt16(min(m * 1000, 65535)) : 0
+            }
+        }
+        let data = millimetres.withUnsafeBytes { Data($0) }
+        return png(data, width: plane.width, height: plane.height, bits: 16,
+                   info: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue | CGBitmapInfo.byteOrder16Little.rawValue))
+    }
+
+    private static func grayPNG(_ plane: Plane) -> Data? {
+        guard plane.bytesPerPixel == 1 else { return nil }
+        return png(plane.data, width: plane.width, height: plane.height, bits: 8,
+                   info: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue))
+    }
+
+    private static func png(_ pixels: Data, width: Int, height: Int, bits: Int, info: CGBitmapInfo) -> Data? {
+        guard let provider = CGDataProvider(data: pixels as CFData),
+              let image = CGImage(width: width, height: height, bitsPerComponent: bits, bitsPerPixel: bits,
+                                  bytesPerRow: width * bits / 8, space: CGColorSpaceCreateDeviceGray(), bitmapInfo: info,
+                                  provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else { return nil }
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(output, "public.png" as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return output as Data
     }
 
     /// Variance of the Laplacian over the centre of the brightness plane: higher means sharper.

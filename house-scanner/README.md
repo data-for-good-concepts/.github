@@ -1,24 +1,23 @@
 # House Scanner
 
 ```
-iPhone app (LiDAR)                          render-server/ (Cloud Run)                     Any screen
-RoomPlan rooms ─┐                           process once:                                   thin client:
-Photos + poses  ├─ house-scan.zip ────────▶  textures for walls and floors from photos       shows JPEG frames,
-LiDAR mesh      │  (manifest + README        furniture cut out of the LiDAR mesh, coloured  sends touches back
-Video + poses   ┘   for Claude)              → model.glb + annotations.json
-                                             render live in headless Chromium ─────────────▶
+iPhone app (LiDAR + camera)                                  Claude
+RoomPlan rooms + measurements ─┐                             reads README + manifest, then builds the
+Full-res photos + camera poses │                             rendering that fits the goal, for example:
+LiDAR depth per photo          ├─ house-scan.zip ──────────▶  · Gaussian splats (photoreal), run on a GPU
+LiDAR mesh (labelled)          │  (manifest.json, README.md,  · textured mesh (Blender / games)
+Video + poses                  ┘   transforms.json)           · three.js viewer with RoomPlan measurements
 ```
 
-An iPhone app that scans your home with the LiDAR sensor using Apple's RoomPlan.
+An iPhone app that scans your home with the LiDAR sensor and camera and exports **everything it captured**, annotated and documented, so Claude can build a photoreal 3D rendering from it. The app itself doesn't render anything photoreal; it makes sure the raw data is complete and well described.
 
 - Scan one room, or several rooms in a row. Rooms scanned in one go are joined into a single 3D model of the house.
 - 2D floor plan with wall lengths, doors, windows and furniture
 - Floor area, ceiling height, and counts of doors, windows and furniture
 - View the model in 3D or place it in AR on a table
-- **Records the camera while scanning**: an MP4 video plus sharp still photos with the exact camera position, used to put real textures on walls and floors in the web viewer. A yellow **Hold still for a photo** sign appears whenever the phone reaches a new viewpoint, and blurry photos are thrown away.
+- **Records the camera while scanning**: an MP4 video, plus sharp still photos at full sensor resolution (1920×1440), each with the exact camera position, lens data, exposure and a **LiDAR depth map** with confidence. A yellow **Hold still for a photo** sign appears whenever the phone reaches a new viewpoint (about every 30 cm or 15°), and blurry photos are thrown away.
 - **LiDAR mesh**: ARKit's triangle mesh (with wall/floor/table/seat/… labels) is captured alongside RoomPlan and saved per session as PLY.
-- **Package for Claude**: `house-scan.zip` bundles the room model, photos, mesh and camera poses with a `manifest.json` and a `README.md` that documents every file and coordinate convention (see `HouseScanner/PackageREADME.md`). An example is in `samples/house-scan-sample.zip`.
-- **Render in the cloud**: uploads the package to your render server and shows the live rendering (see `render-server/README.md`). Set the server address and token under Settings (gear icon).
+- **Package for Claude**: `house-scan.zip` bundles all of it with a `manifest.json`, a nerfstudio-style `transforms.json` (ready for Gaussian splatting) and a `README.md`. The README documents every file and coordinate convention and how to build a photoreal rendering (see `HouseScanner/PackageREADME.md`). *Package with video* adds the videos too. An example is in `samples/house-scan-sample.zip`.
 - **Add rooms later**: open a scan and tap *Add rooms to this scan*. The phone recognises the place from the saved ARKit world map and new rooms join onto the earlier ones.
 - Export as **JSON** (for 3D web apps like three.js), **DXF** (CAD floor plan with 3D walls) or **USDZ** (3D model). Send them by AirDrop to your Mac. They're also in the Files app under *On My iPhone → House Scanner*.
 
@@ -60,7 +59,7 @@ Rooms scanned in one go always line up, because the phone keeps tracking the who
 3. **Start in a room you already scanned** and move slowly. The app waits until ARKit recognises the place ("Lined up with your earlier scan") before it lets you scan.
 4. Walk on into the new rooms and scan them. Tap **Add to scan** when done.
 
-The new rooms, photos and video are added to the same scan in the same coordinates, so the floor plan, merged 3D model and textured web view all join up.
+The new rooms, photos, depth, mesh and video are added to the same scan in the same coordinates, so everything in the package joins up.
 
 For reliable recognition: similar lighting to the first session (daylight vs. lamps matters), furniture not moved much, and start somewhere with plenty of detail (not a blank wall).
 
@@ -74,11 +73,14 @@ Every scan folder contains:
 | `floor-plan.dxf` | AutoCAD R12 DXF in metres. Layers `WALLS`, `DOORS`, `WINDOWS`, `OPENINGS`, `FURNITURE`, `FLOOR`, `LABELS` (wall lengths, furniture names) and `WALLS_3D` (walls as 3D faces). |
 | `house.usdz`, `room-N.usdz` | Apple 3D models (merged house and each room) |
 | `rooms.json` | Apple's raw RoomPlan data |
-| `house-scan.zip` | `house-scene.json` + `keyframes.json` + `keyframes/*.jpg`. Open it in the web viewer for textured walls and floors. |
+| `house-scan.zip` | **The package for Claude:** everything below except the videos, plus `manifest.json`, `transforms.json` and `README.md`. Also opens in the web viewer. |
+| `house-scan-with-video.zip` | The same plus the videos (made when you tap *Package with video*) |
 | `video.mp4`, `video-2.mp4`… | The camera feed of each scanning session (HEVC) |
 | `video-poses.json`, `video-poses-2.json`… | Camera position and lens data for every video frame |
 | `worldmap.arexperience` | ARKit's map of the place, used to line up later sessions |
-| `keyframes/*.jpg`, `keyframes.json` | Sharp still photos (960 px wide) from all sessions, taken when the phone has moved 45 cm or turned 20° and is held still, with camera position and lens data |
+| `keyframes/*.jpg`, `keyframes.json` | Sharp still photos (1920×1440) from all sessions, with camera position, lens data and exposure |
+| `depth/*.png`, `confidence/*.png` | LiDAR depth (16-bit, mm) and its confidence for each photo |
+| `mesh/mesh-N.ply` | LiDAR mesh of each session, with a label per triangle |
 
 ## Files
 
@@ -93,8 +95,13 @@ Every scan folder contains:
 | `RoomStats.swift` | Floor area, ceiling height and object counts |
 | `SceneExporter.swift` | Writes `house-scene.json` |
 | `DXFExporter.swift` | Writes `floor-plan.dxf` |
-| `FrameRecorder.swift` | Records the video and still photos during the scan |
+| `FrameRecorder.swift` | Records the video, still photos, depth and exposure during the scan |
+| `MeshExporter.swift` | Writes the LiDAR mesh as PLY |
+| `PackageBuilder.swift` | Builds the package (`manifest.json`, `transforms.json`, ZIP) |
+| `PackageREADME.md` | The README that goes inside every package |
 
 ## 3D web viewer
 
-`web-viewer/index.html` turns `house-scan.zip` (or `house-scene.json`) into an interactive three.js model with textured walls and floors (orbit, floor plan and walk-through). See `web-viewer/README.md`.
+`web-viewer/index.html` is a quick, simple preview: it turns `house-scan.zip` (or `house-scene.json`) into an interactive three.js model with walls and floors textured from the photos. It is not the photoreal result; that's what the package is for. See `web-viewer/README.md`.
+
+`archive/render-server/` is an earlier, automatic cloud pipeline, kept for reference only.
