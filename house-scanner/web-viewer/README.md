@@ -23,6 +23,10 @@ When the ZIP contains the LiDAR mesh (`mesh/*.ply`, from the LiDAR walk), two mo
 - **Better textures and real furniture (Model).** The mesh's depth is rendered from every photo's camera on the GPU, so each photo only colours what it really sees: furniture no longer gets painted onto the wall behind it. Furniture is shown with its real scanned shape (the mesh inside each RoomPlan box), coloured from the photos. The RoomPlan boxes stay underneath for tapping and sizes.
 - **Splats.** A *Splats* button appears: the whole LiDAR mesh as up to 600,000 flat Gaussian splats, each coloured from the photos that see it, rendered with [Spark](https://sparkjs.dev). It shows everything the sensor saw (shelves, plants, lamps), not only RoomPlan's walls and boxes. It is an instant preview made in the browser, not trained Gaussian splatting, so it is softer than a trained result. Cutaway, Walk and tapping work in both looks.
 
+Photos are matched to each other before blending (a brightness and colour gain per photo, worked out from spots several photos see), the best photo per spot is strongly preferred so slightly misaligned photos don't blur, and spots no photo saw are filled smoothly from the colours around them.
+
+**Several levels:** rooms on different floors are grouped into levels. Each room is cut away 1.25 m above its own floor, Walk keeps you 1.6 m above the floor you're on, and *Lower / Upper* (or *Level n*) shows one level at a time.
+
 To test a scan without picking the file, serve this folder (`python3 -m http.server`) and open `/?zip=path/to/house-scan.zip`.
 
 ## How the textures are made
