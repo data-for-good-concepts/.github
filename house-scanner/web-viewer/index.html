@@ -702,7 +702,8 @@ function onTap(e) {
 // ---------- textures from the scan's photos ----------
 // Every wall and floor is a flat plane, so each texel's 3D position can be projected into the
 // photos (ARKit camera model) and coloured from the photos that see it best.
-const TEX_PX_PER_M = 80;
+const TEX_PX_PER_M = 160;     // texels per metre on walls and floors (about 6 mm each)
+const PHOTO_WIDTH = 1440;     // photos are decoded at this width for colouring
 const CELL = 0.4;            // metres; photo choice is made per cell, then blended per texel
 const MAX_PHOTOS_PER_SURFACE = 40;
 let bakeRun = 0;
@@ -712,8 +713,8 @@ function prepareFrames(list) {
     const m = new THREE.Matrix4().fromArray(f.transform);
     const e = m.elements;
     const inv = m.clone().invert().elements;
-    // Full-resolution photos are scaled to 960 px wide as they load, to keep memory low on phones.
-    const s = Math.min(1, 960 / f.width);
+    // Full-resolution photos are scaled down as they load, to keep memory in check on phones.
+    const s = Math.min(1, PHOTO_WIDTH / f.width);
     return {
       file: f.file, w: Math.round(f.width * s), h: Math.round(f.height * s),
       fx: f.intrinsics[0] * s, fy: f.intrinsics[1] * s, cx: f.intrinsics[2] * s, cy: f.intrinsics[3] * s,
@@ -764,7 +765,7 @@ function blocked(planes, a, b, skip) {
 }
 
 // Decoded photos (scaled to 960 px), most recently used kept.
-function makePhotoCache(getBlob, keep = 48) {
+function makePhotoCache(getBlob, keep = 24) {
   const cache = new Map();
   return async function pixels(f) {
     if (cache.has(f.file)) { const v = cache.get(f.file); cache.delete(f.file); cache.set(f.file, v); return v; }
@@ -1012,8 +1013,9 @@ async function bakeTextures(frames, pixels, run, getBlob) {
     }
 
     // 3. Colour every texel from a weighted blend of its candidate photos.
-    const tw = Math.min(1024, Math.max(8, Math.round(sf.lenU * TEX_PX_PER_M)));
-    const th = Math.min(1024, Math.max(8, Math.round(sf.lenV * TEX_PX_PER_M)));
+    const maxSide = Math.min(4096, renderer.capabilities.maxTextureSize);
+    const tw = Math.min(maxSide, Math.max(8, Math.round(sf.lenU * TEX_PX_PER_M)));
+    const th = Math.min(maxSide, Math.max(8, Math.round(sf.lenV * TEX_PX_PER_M)));
     const out = new ImageData(tw, th);
     const o = out.data;
     const covered = new Uint8Array(tw * th);
@@ -1411,22 +1413,26 @@ async function buildFurniture(mesh, frames, pixels, run) {
   }
   // Normals of a scanned surface can point either way: face them towards where the photos were taken.
   orientTowardsCameras(pts, nrm, frames);
-  const colours = await colourPoints(pts, nrm, frames, pixels, run, 'Colouring furniture');
-  if (!colours) return;
+  let done = 0;
   for (const ob of kept) {
+    if (run !== bakeRun) return;
     const count = ob.faces.length * 3;
+    const P = pts.slice(ob.start * 3, (ob.start + count) * 3), Nn = nrm.slice(ob.start * 3, (ob.start + count) * 3);
+    const atlas = await bakeTriangleAtlas(P, Nn, frames, pixels, run);
+    if (!atlas) return;
     const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(pts.slice(ob.start * 3, (ob.start + count) * 3), 3));
-    g.setAttribute('normal', new THREE.BufferAttribute(nrm.slice(ob.start * 3, (ob.start + count) * 3), 3));
-    const col = vertexColours(colours, ob.start, count);
-    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
-    const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, side: THREE.DoubleSide, clippingPlanes: [ob.group.userData.cutPlane] }));
+    g.setAttribute('position', new THREE.BufferAttribute(P, 3));
+    g.setAttribute('normal', new THREE.BufferAttribute(Nn, 3));
+    g.setAttribute('uv', new THREE.BufferAttribute(atlas.uv, 2));
+    const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ map: atlas.texture, roughness: 0.9, side: THREE.DoubleSide, clippingPlanes: [ob.group.userData.cutPlane] }));
     m.castShadow = true; m.receiveShadow = true;
     m.userData.meshFurniture = true;
     ob.group.add(m);
     house.meshFurniture.push(m);
     const box = house.pickables.find((p) => p.userData.objectId === ob.o.id);
     if (box) house.furnitureBoxes.push(box);
+    setProgress(++done, kept.length, 'Texturing furniture from the photos');
+    showTextures($('tex').checked);
   }
   showTextures($('tex').checked);
 }
@@ -1469,6 +1475,118 @@ async function colourBoxes(objects, frames, pixels, run) {
     house.colouredBoxes.push(b);
   }
   showTextures($('tex').checked);
+}
+
+// A photo texture for a scanned mesh: every triangle gets its own small patch of one texture image
+// (two triangles per square cell), and every texel is coloured from the photos that see that spot
+// best, so detail comes from the photos (a few mm), not from the mesh's 4–5 cm triangles.
+const ATLAS_MAX = 2048;
+async function bakeTriangleAtlas(P, N, frames, pixels, run) {
+  const tris = P.length / 9;
+  const maxSide = Math.min(ATLAS_MAX, renderer.capabilities.maxTextureSize);
+  const cells = Math.ceil(tris / 2);
+  const grid = Math.ceil(Math.sqrt(cells));
+  const C = Math.max(6, Math.min(24, Math.floor(maxSide / grid)));     // cell size in texels
+  const size = grid * C;
+  const S = C - 3;                                                        // triangle legs in texels, with a gutter
+
+  // UVs: triangle 2k in the lower-left half of cell k, 2k+1 in the upper-right half.
+  const uv = new Float32Array(tris * 6);
+  const corner = (t) => {
+    const k = t >> 1, x0 = (k % grid) * C, y0 = Math.floor(k / grid) * C;
+    return (t & 1) === 0
+      ? [[x0 + 1, y0 + 1], [x0 + 1 + S, y0 + 1], [x0 + 1, y0 + 1 + S]]
+      : [[x0 + C - 1, y0 + C - 1], [x0 + C - 1 - S, y0 + C - 1], [x0 + C - 1, y0 + C - 1 - S]];
+  };
+  for (let t = 0; t < tris; t++) corner(t).forEach(([x, y], k) => { uv[t * 6 + k * 2] = x / size; uv[t * 6 + k * 2 + 1] = 1 - y / size; });
+
+  // The photos that see this object best (by how well they see a sample of its triangles).
+  const totals = new Map();
+  const N3 = new THREE.Vector3(), toCam = new THREE.Vector3();
+  const quality = (f, x, y, z, n) => {
+    toCam.set(f.pos.x - x, f.pos.y - y, f.pos.z - z);
+    const d = toCam.length();
+    if (d < 0.25 || d > 6) return 0;
+    const cos = toCam.dot(n) / d;
+    if (cos < 0.15) return 0;
+    const p = project(f, x, y, z, 2);
+    if (!p) return 0;
+    const ex = Math.min(p[0], f.w - p[0]) / (f.w * 0.12), ey = Math.min(p[1], f.h - p[1]) / (f.h * 0.12);
+    return (cos * cos / Math.max(d, 0.6)) * Math.min(1, ex) * Math.min(1, ey);
+  };
+  const step = Math.max(1, Math.floor(tris / 300));
+  for (let t = 0; t < tris; t += step) {
+    const x = (P[t * 9] + P[t * 9 + 3] + P[t * 9 + 6]) / 3, y = (P[t * 9 + 1] + P[t * 9 + 4] + P[t * 9 + 7]) / 3, z = (P[t * 9 + 2] + P[t * 9 + 5] + P[t * 9 + 8]) / 3;
+    N3.set(N[t * 9], N[t * 9 + 1], N[t * 9 + 2]);
+    frames.forEach((f, k) => {
+      const q = quality(f, x, y, z, N3);
+      if (q > 0 && !hiddenFrom(f, x, y, z)) totals.set(k, (totals.get(k) || 0) + q);
+    });
+  }
+  const photos = [...totals.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map((x) => x[0]);
+
+  // Every texel's 3D point (clamped onto its triangle, so the gutter repeats the edge colour).
+  const texels = size * size;
+  const acc = new Float32Array(texels * 4);
+  const owner = new Int32Array(texels).fill(-1);
+  const wx = new Float32Array(texels), wy = new Float32Array(texels), wz = new Float32Array(texels);
+  for (let k = 0; k < cells; k++) {
+    const x0 = (k % grid) * C, y0 = Math.floor(k / grid) * C;
+    for (let ty = 0; ty < C; ty++) for (let tx = 0; tx < C; tx++) {
+      const lx = tx + 0.5, ly = ty + 0.5;
+      // Lower-left triangle (u along x, v along y) or the upper-right one, whichever is nearer.
+      let t, u, v;
+      if (lx + ly <= C) { t = 2 * k; u = (lx - 1) / S; v = (ly - 1) / S; }
+      else { t = 2 * k + 1; u = (C - 1 - lx) / S; v = (C - 1 - ly) / S; }
+      if (t >= tris) continue;
+      u = Math.max(0, u); v = Math.max(0, v);
+      if (u + v > 1) { const s2 = u + v; u /= s2; v /= s2; }
+      const b = t * 9, i = (y0 + ty) * size + x0 + tx;
+      wx[i] = P[b] + u * (P[b + 3] - P[b]) + v * (P[b + 6] - P[b]);
+      wy[i] = P[b + 1] + u * (P[b + 4] - P[b + 1]) + v * (P[b + 7] - P[b + 1]);
+      wz[i] = P[b + 2] + u * (P[b + 5] - P[b + 2]) + v * (P[b + 8] - P[b + 2]);
+      owner[i] = t;
+    }
+  }
+  for (const k of photos) {
+    if (run !== bakeRun) return null;
+    const f = frames[k];
+    let img;
+    try { img = await pixels(f); } catch { continue; }
+    const d = img.data, iw = img.width, gain = f.gain || [1, 1, 1];
+    for (let i = 0; i < texels; i++) {
+      const t = owner[i];
+      if (t < 0) continue;
+      N3.set(N[t * 9], N[t * 9 + 1], N[t * 9 + 2]);
+      let w = quality(f, wx[i], wy[i], wz[i], N3);
+      if (!w || hiddenFrom(f, wx[i], wy[i], wz[i])) continue;
+      w = w ** 6;
+      const p = project(f, wx[i], wy[i], wz[i], 1);
+      const x0 = p[0] | 0, y0 = p[1] | 0, ax = p[0] - x0, ay = p[1] - y0;
+      const p00 = (y0 * iw + x0) * 4, p10 = p00 + 4, p01 = p00 + iw * 4, p11 = p01 + 4;
+      for (let ch = 0; ch < 3; ch++) {
+        const val = (d[p00 + ch] * (1 - ax) + d[p10 + ch] * ax) * (1 - ay) + (d[p01 + ch] * (1 - ax) + d[p11 + ch] * ax) * ay;
+        acc[i * 4 + ch] += val * gain[ch] * w;
+      }
+      acc[i * 4 + 3] += w;
+    }
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  const out = new ImageData(size, size), o = out.data;
+  const mask = new Uint8Array(texels);
+  for (let i = 0; i < texels; i++) {
+    const w = acc[i * 4 + 3];
+    if (w > 0) { o[i * 4] = acc[i * 4] / w; o[i * 4 + 1] = acc[i * 4 + 1] / w; o[i * 4 + 2] = acc[i * 4 + 2] / w; mask[i] = 1; }
+    o[i * 4 + 3] = 255;
+  }
+  pushPullFill(o, mask, size, size, [150, 150, 150]);
+  const c = document.createElement('canvas');
+  c.width = size; c.height = size;
+  c.getContext('2d').putImageData(out, 0, 0);
+  const texture = new THREE.CanvasTexture(c);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return { uv, texture };
 }
 
 function orientTowardsCameras(pts, nrm, frames) {
