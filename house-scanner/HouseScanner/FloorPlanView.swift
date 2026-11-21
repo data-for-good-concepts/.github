@@ -110,17 +110,17 @@ struct FloorPlan {
         return rect
     }
 
-    private static func flat(_ v: simd_float4) -> CGPoint {
+    static func flat(_ v: simd_float4) -> CGPoint {
         CGPoint(x: CGFloat(v.x), y: CGFloat(v.z))
     }
 
-    private static func direction(_ v: simd_float4) -> CGVector {
+    static func direction(_ v: simd_float4) -> CGVector {
         let length = max(hypot(CGFloat(v.x), CGFloat(v.z)), 0.0001)
         return CGVector(dx: CGFloat(v.x) / length, dy: CGFloat(v.z) / length)
     }
 
     /// Walls, doors and windows are flat rectangles; their local x axis runs along their width.
-    private static func segment(_ surface: CapturedRoom.Surface) -> Segment {
+    static func segment(_ surface: CapturedRoom.Surface) -> Segment {
         let t = surface.transform
         let center = flat(t.columns.3)
         let dir = direction(t.columns.0)
@@ -131,7 +131,7 @@ struct FloorPlan {
     }
 
     /// The rectangle an object (bed, sofa, table…) covers on the floor.
-    private static func footprint(_ object: CapturedRoom.Object) -> [CGPoint] {
+    static func footprint(_ object: CapturedRoom.Object) -> [CGPoint] {
         let t = object.transform
         let c = flat(t.columns.3)
         let right = direction(t.columns.0)
@@ -144,7 +144,7 @@ struct FloorPlan {
         }
     }
 
-    private static func outline(_ floor: CapturedRoom.Surface) -> [CGPoint]? {
+    static func outline(_ floor: CapturedRoom.Surface) -> [CGPoint]? {
         guard floor.polygonCorners.count >= 3 else { return nil }
         return floor.polygonCorners.map { corner in
             flat(floor.transform * simd_float4(corner, 1))

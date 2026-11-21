@@ -14,6 +14,8 @@ struct ScanMeta: Codable, Hashable {
 /// - rooms.json     the raw RoomPlan data (used for the floor plan and stats)
 /// - room-N.usdz    a 3D model of each room
 /// - house.usdz     all rooms merged into one model (when there is more than one room)
+/// - house-scene.json  clean JSON for building 3D scenes in JavaScript (three.js)
+/// - floor-plan.dxf    floor plan for CAD programs (with 3D walls)
 struct SavedScan: Identifiable, Hashable {
     let folder: URL
     var meta: ScanMeta
@@ -22,6 +24,8 @@ struct SavedScan: Identifiable, Hashable {
 
     var mergedModelURL: URL { folder.appending(path: "house.usdz") }
     var roomsDataURL: URL { folder.appending(path: "rooms.json") }
+    var sceneJSONURL: URL { folder.appending(path: "house-scene.json") }
+    var dxfURL: URL { folder.appending(path: "floor-plan.dxf") }
 
     func roomModelURL(_ index: Int) -> URL {
         folder.appending(path: "room-\(index + 1).usdz")
@@ -87,6 +91,7 @@ final class ScanStore: ObservableObject {
         }
 
         try JSONEncoder().encode(rooms).write(to: scan.roomsDataURL)
+        try writeExports(for: scan, rooms: rooms)
         try JSONEncoder().encode(scan.meta).write(to: folder.appending(path: "meta.json"))
 
         reload()
@@ -96,6 +101,13 @@ final class ScanStore: ObservableObject {
     func loadRooms(for scan: SavedScan) throws -> [CapturedRoom] {
         let data = try Data(contentsOf: scan.roomsDataURL)
         return try JSONDecoder().decode([CapturedRoom].self, from: data)
+    }
+
+    /// Writes the JSON scene and DXF floor plan. Also used to fill them in for older scans.
+    func writeExports(for scan: SavedScan, rooms: [CapturedRoom]) throws {
+        try SceneExporter.data(rooms: rooms, name: scan.meta.name, date: scan.meta.date)
+            .write(to: scan.sceneJSONURL)
+        try DXFExporter.string(rooms: rooms).write(to: scan.dxfURL, atomically: true, encoding: .utf8)
     }
 
     func rename(_ scan: SavedScan, to name: String) {

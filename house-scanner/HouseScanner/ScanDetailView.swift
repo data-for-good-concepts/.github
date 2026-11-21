@@ -51,15 +51,28 @@ struct ScanDetailView: View {
                     }
                 }
 
-                ShareLink(item: scan.mainModelURL) {
-                    Label("Share 3D model (AirDrop to Mac…)", systemImage: "square.and.arrow.up")
-                }
             } header: {
                 Text("3D model")
             } footer: {
                 if scan.meta.roomCount > 1 && !scan.meta.hasMergedModel {
                     Text("The rooms couldn't be joined into one model, but you can still open each room on its own.")
                 }
+            }
+
+            Section {
+                ShareLink(item: scan.sceneJSONURL) {
+                    exportLabel("Scene for 3D web apps", "JSON · walls, doors, windows, furniture", "curlybraces")
+                }
+                ShareLink(item: scan.dxfURL) {
+                    exportLabel("Floor plan for CAD", "DXF · 2D plan with 3D walls, in metres", "ruler")
+                }
+                ShareLink(item: scan.mainModelURL) {
+                    exportLabel("3D model", "USDZ · opens on iPhone, Mac, Blender", "cube")
+                }
+            } header: {
+                Text("Export")
+            } footer: {
+                Text("Use AirDrop to send files to your Mac. All files are also in the Files app under On My iPhone → House Scanner.")
             }
 
             Section("Summary") {
@@ -117,6 +130,17 @@ struct ScanDetailView: View {
         store.scans.first { $0.id == scan.id }?.meta.name ?? scan.meta.name
     }
 
+    private func exportLabel(_ title: String, _ detail: String, _ icon: String) -> some View {
+        Label {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                Text(detail).font(.caption).foregroundStyle(.secondary)
+            }
+        } icon: {
+            Image(systemName: icon)
+        }
+    }
+
     private var legend: some View {
         HStack(spacing: 14) {
             legendItem(.primary, "Wall")
@@ -138,6 +162,10 @@ struct ScanDetailView: View {
     private func load() {
         do {
             rooms = try store.loadRooms(for: scan)
+            let fm = FileManager.default
+            if !fm.fileExists(atPath: scan.sceneJSONURL.path) || !fm.fileExists(atPath: scan.dxfURL.path) {
+                try? store.writeExports(for: scan, rooms: rooms)
+            }
         } catch {
             loadError = "Couldn't read the floor plan data: \(error.localizedDescription)"
         }

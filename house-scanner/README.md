@@ -6,7 +6,7 @@ An iPhone app that scans your home with the LiDAR sensor using Apple's RoomPlan.
 - 2D floor plan with wall lengths, doors, windows and furniture
 - Floor area, ceiling height, and counts of doors, windows and furniture
 - View the model in 3D or place it in AR on a table
-- Share the `.usdz` model by AirDrop to your Mac. Scans also appear in the Files app under *On My iPhone → House Scanner*.
+- Export as **JSON** (for 3D web apps like three.js), **DXF** (CAD floor plan with 3D walls) or **USDZ** (3D model). Send them by AirDrop to your Mac. They're also in the Files app under *On My iPhone → House Scanner*.
 
 ## What you need
 
@@ -36,6 +36,17 @@ An iPhone app that scans your home with the LiDAR sensor using Apple's RoomPlan.
 - **Several rooms:** after *Done with this room*, walk through the doorway into the next room, then tap *Scan next room*. Do all rooms in one session so they line up.
 - Close cupboards and keep doors in a consistent position (fully open or closed).
 
+## Export formats
+
+Every scan folder contains:
+
+| File | Format |
+|---|---|
+| `house-scene.json` | Every wall, door, window, opening, floor and piece of furniture with position, size, rotation and a full 4×4 matrix. Metres, Y up, right-handed, same as three.js: `new THREE.Matrix4().fromArray(item.matrix)`. Includes overall `bounds` for framing the camera. |
+| `floor-plan.dxf` | AutoCAD R12 DXF in metres. Layers `WALLS`, `DOORS`, `WINDOWS`, `OPENINGS`, `FURNITURE`, `FLOOR`, `LABELS` (wall lengths, furniture names) and `WALLS_3D` (walls as 3D faces). |
+| `house.usdz`, `room-N.usdz` | Apple 3D models (merged house and each room) |
+| `rooms.json` | Apple's raw RoomPlan data |
+
 ## Files
 
 | File | What it does |
@@ -47,3 +58,5 @@ An iPhone app that scans your home with the LiDAR sensor using Apple's RoomPlan.
 | `ScanDetailView.swift` | Floor plan, 3D/AR viewer, stats, sharing |
 | `FloorPlanView.swift` | Draws the top-down floor plan |
 | `RoomStats.swift` | Floor area, ceiling height and object counts |
+| `SceneExporter.swift` | Writes `house-scene.json` |
+| `DXFExporter.swift` | Writes `floor-plan.dxf` |
