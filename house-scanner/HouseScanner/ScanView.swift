@@ -55,6 +55,10 @@ struct ScanView: View {
             }
             .padding()
 
+            if controller.phase == .roomDone {
+                walkGuide
+            }
+
             if isSaving {
                 Color.black.opacity(0.5).ignoresSafeArea()
                 ProgressView("Building your 3D model…")
@@ -137,6 +141,42 @@ struct ScanView: View {
         }
     }
 
+    /// LiDAR walk: red tiles on the canvas show what still needs a photo with LiDAR depth; this adds
+    /// an arrow when none is on screen, distance coaching, and progress.
+    @ViewBuilder
+    private var walkGuide: some View {
+        VStack(spacing: 10) {
+            if let direction = controller.walkDirection {
+                if !direction.inView {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 72, weight: .heavy))
+                        .rotationEffect(.radians(direction.angle))
+                        .animation(.easeOut(duration: 0.25), value: direction.angle)
+                }
+                Text(direction.text)
+                    .font(.headline)
+                    .multilineTextAlignment(.center)
+            } else if controller.walkTotal > 0 {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 56))
+                Text("This room is covered")
+                    .font(.headline)
+            }
+            if controller.walkTotal > 0 {
+                Text("\(controller.walkDone) of \(controller.walkTotal) areas done")
+                    .font(.caption.weight(.semibold))
+                ProgressView(value: Double(controller.walkDone), total: Double(controller.walkTotal))
+                    .tint(.yellow)
+                    .frame(width: 160)
+            }
+        }
+        .foregroundStyle(.yellow)
+        .padding(14)
+        .background(.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 16))
+        .allowsHitTesting(false)
+        .accessibilityElement(children: .combine)
+    }
+
     /// "Hold still" nudge while a new viewpoint needs a photo, then a short "Photo saved".
     @ViewBuilder
     private var captureHint: some View {
@@ -203,7 +243,7 @@ struct ScanView: View {
 
         case .roomDone:
             VStack(spacing: 12) {
-                hint("LiDAR walk: walk slowly around this room for about 30 seconds and stop for each photo. These photos get LiDAR depth.\n"
+                hint("LiDAR walk: fill in the red areas. Point at each one from 1–3 m and hold still for a photo.\n"
                      + (controller.mapIsGoodForContinuing
                         ? "Then, to add another room, walk into it through the doorway and tap Scan next room. Rooms scanned in one go are joined together."
                         : "Then, to add another room, walk into it through the doorway and tap Scan next room. Before saving, look around a little more so you can add rooms to this scan later."))

@@ -29,6 +29,8 @@ final class CoverageCanvas {
         cameraNode.camera = SCNCamera()
         scene.rootNode.addChildNode(cameraNode)
         scene.rootNode.addChildNode(pointsRoot)
+        gapsNode.renderingOrder = 10   // after the points, so captured points stay visible
+        scene.rootNode.addChildNode(gapsNode)
         view.pointOfView = cameraNode
     }
 
@@ -58,6 +60,45 @@ final class CoverageCanvas {
             node.geometry = geometry(points)
         }
     }
+
+    /// Red tiles where the LiDAR walk still needs a photo (replaces any shown before).
+    func showGaps(_ tiles: [Int: [SIMD3<Float>]]) {
+        gapsNode.geometry = nil
+        let quads = tiles.values.filter { $0.count == 4 }
+        guard !quads.isEmpty else { return }
+        var vertices: [SIMD3<Float>] = []
+        var triangles: [UInt32] = []
+        var lines: [UInt32] = []
+        for quad in quads {
+            let base = UInt32(vertices.count)
+            vertices.append(contentsOf: quad)
+            triangles += [base, base + 1, base + 2, base, base + 2, base + 3]
+            lines += [base, base + 1, base + 1, base + 2, base + 2, base + 3, base + 3, base]
+        }
+        let source = SCNGeometrySource(vertices: vertices.map { SCNVector3($0.x, $0.y, $0.z) })
+        let fill = SCNGeometryElement(indices: triangles, primitiveType: .triangles)
+        let outline = SCNGeometryElement(indices: lines, primitiveType: .line)
+        let geometry = SCNGeometry(sources: [source], elements: [fill, outline])
+        geometry.materials = [gapFill, gapOutline]
+        gapsNode.geometry = geometry
+    }
+
+    private let gapsNode = SCNNode()
+    private let gapFill: SCNMaterial = {
+        let m = SCNMaterial()
+        m.lightingModel = .constant
+        m.diffuse.contents = UIColor.systemRed.withAlphaComponent(0.35)
+        m.isDoubleSided = true
+        m.writesToDepthBuffer = false
+        return m
+    }()
+    private let gapOutline: SCNMaterial = {
+        let m = SCNMaterial()
+        m.lightingModel = .constant
+        m.diffuse.contents = UIColor.systemRed
+        m.isDoubleSided = true
+        return m
+    }()
 
     private func geometry(_ points: CoverageMap.Points) -> SCNGeometry {
         let count = points.positions.count

@@ -48,7 +48,7 @@ An iPhone app that scans your home with the LiDAR sensor and camera and exports 
 - Use good, even lighting. Avoid pointing at mirrors and large windows for a long time.
 - Move slowly and sweep the camera from floor to ceiling. Make sure every wall corner has been seen.
 - **Several rooms:** after *Done with this room*, walk through the doorway into the next room, then tap *Scan next room*. Do all rooms in one session so they line up.
-- **LiDAR walk:** after *Done with this room*, walk slowly around the room once more for about 30 seconds, stopping for each photo. These photos get LiDAR depth, and the mesh fills in.
+- **LiDAR walk:** after *Done with this room*, the parts of the walls and floor that still need a LiDAR photo show as **red tiles** (about 1 m each). Point at each from 1–3 m and hold still: a photo is taken and the tile disappears. When no red tile is on screen, a yellow arrow shows which way to turn. These photos get LiDAR depth, and the mesh fills in.
 - Close cupboards and keep doors in a consistent position (fully open or closed).
 - **Fill the black:** sweep the camera up to the ceiling and down to the floor on every wall. When the yellow *Hold still to reveal this area* sign appears, stop for a moment until it turns green: that area then appears on screen. Keep going until no gaps are left.
 
@@ -100,6 +100,7 @@ Every scan folder contains:
 | `FrameRecorder.swift` | Records the video, still photos, depth and exposure during the scan |
 | `MeshExporter.swift` | Writes the LiDAR mesh as PLY |
 | `CoverageMap.swift` | Works out which areas are fully captured (3 cm grid, from each photo's depth) |
+| `WalkGuide.swift` | Guides the LiDAR walk: splits the room into ~1 m areas, tracks which a LiDAR photo has seen, and points to the rest |
 | `RoomDepth.swift` | Depth for each photo from RoomPlan's live room model, used for the black canvas (RoomPlan gives the app no LiDAR depth) |
 | `CoverageCanvas.swift` | The black scanning screen that shows captured areas as coloured points |
 | `PackageBuilder.swift` | Builds the package (`manifest.json`, `transforms.json`, ZIP) |

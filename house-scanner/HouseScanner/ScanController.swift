@@ -41,6 +41,10 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureSessionDelega
     @Published var instruction: String?
     /// Whether RoomPlan's session delivers LiDAR depth per frame and a mesh (shown while testing).
     @Published var lidarStatus = ""
+    /// During the LiDAR walk: which way to the nearest area still missing depth, and how much is done.
+    @Published var walkDirection: WalkGuide.Direction?
+    @Published var walkDone = 0
+    @Published var walkTotal = 0
 
     let canvas = CoverageCanvas()
     let coverage = CoverageMap()
@@ -57,6 +61,8 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureSessionDelega
     /// RoomPlan's model of the finished rooms plus the one being scanned, used to fill the canvas.
     private var roomDepth = RoomDepth(rooms: [])
     private var lastPosition: SIMD3<Float>?
+    private let walkGuide = WalkGuide()
+    private var lastGuideUpdate: TimeInterval = 0
 
     private(set) lazy var captureSession: RoomCaptureSession = {
         let session = RoomCaptureSession(arSession: arSession)
@@ -69,6 +75,7 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureSessionDelega
         self.isContinuing = worldMap != nil
         self.phase = worldMap == nil ? .idle : .relocalizing
         super.init()
+        walkGuide.onTilesChanged = { [weak self] tiles in self?.canvas.showGaps(tiles) }
         coverage.onUpdate = { [weak self] chunks, area in
             guard let self else { return }
             self.canvas.apply(chunks)
@@ -106,6 +113,9 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureSessionDelega
             arSession.run(Self.lidarConfiguration())
         }
         print("[HouseScanner] RoomPlan starting room \(rooms.count + 1) at \(Self.position(arSession.currentFrame))")
+        walkGuide.stop()
+        walkDirection = nil
+        walkTotal = 0
         captureSession.run(configuration: RoomCaptureSession.Configuration())
         phase = .scanning
         startRecordingIfNeeded()
@@ -128,6 +138,9 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureSessionDelega
     /// Photos taken now (the "LiDAR walk") are saved with real depth and confidence maps.
     private func startLiDARWalk() {
         print("[HouseScanner] LiDAR walk starting at \(Self.position(arSession.currentFrame))")
+        walkGuide.start(room: rooms.last)
+        walkTotal = walkGuide.totalCount
+        walkDone = 0
         arSession.run(Self.lidarConfiguration())
     }
 
@@ -227,6 +240,11 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureSessionDelega
             return
         }
         canvas.follow(frame.camera)
+        if phase == .roomDone, walkGuide.isActive, frame.timestamp - lastGuideUpdate > 0.2 {
+            lastGuideUpdate = frame.timestamp
+            let direction = walkGuide.direction(camera: frame.camera)
+            if direction != walkDirection { walkDirection = direction }
+        }
         #if DEBUG
         let p = SIMD3<Float>(frame.camera.transform.columns.3.x, frame.camera.transform.columns.3.y, frame.camera.transform.columns.3.z)
         if let last = lastPosition, simd_distance(p, last) > 0.3 {
@@ -319,6 +337,16 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureSessionDelega
                 let mesh = frame.anchors.compactMap { $0 as? ARMeshAnchor }
                 let camera = frame.camera
                 return { Self.depthFromMesh(mesh, camera: camera) ?? room.depthMap(for: camera) }
+            }
+            recorder.wantsPhoto = { [weak self] frame in
+                guard let self, self.phase == .roomDone else { return false }
+                return self.walkGuide.wantsPhoto(camera: frame.camera)
+            }
+            recorder.onDepthPhoto = { [weak self] camera, depth in
+                guard let self, self.phase == .roomDone else { return }
+                self.walkGuide.markCovered(camera: camera, depth: depth)
+                self.walkDone = self.walkGuide.doneCount
+                print("[HouseScanner] LiDAR walk \(self.walkDone)/\(self.walkTotal) patches")
             }
             recorder.onPhotoSaved = { [weak self] in
                 guard let self else { return }

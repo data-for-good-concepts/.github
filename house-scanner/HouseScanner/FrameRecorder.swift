@@ -61,6 +61,10 @@ final class FrameRecorder: @unchecked Sendable {
     let folder: URL
     /// Called on the main thread each time a sharp photo has been saved.
     var onPhotoSaved: (() -> Void)?
+    /// True when a photo from here would fill a gap (LiDAR walk). Then a small move is enough for a new photo.
+    var wantsPhoto: ((ARFrame) -> Bool)?
+    /// Called on the main thread with the camera and LiDAR depth of each photo saved with depth.
+    var onDepthPhoto: ((ARCamera, Plane) -> Void)?
     /// Receives every saved photo's depth, so the screen can show what has been captured.
     var coverage: CoverageMap?
     /// Called on the main thread for a photo without LiDAR depth. Returns work, run on a background
@@ -94,6 +98,9 @@ final class FrameRecorder: @unchecked Sendable {
     /// Dense enough for photoreal reconstruction (Gaussian splatting) when combined with the video.
     private static let newViewDistance: Float = 0.3
     private static let newViewAngle: Float = 0.26      // about 15°
+    /// Aiming at a gap during the LiDAR walk: a new photo after this small a move.
+    private static let gapViewDistance: Float = 0.08
+    private static let gapViewAngle: Float = 0.07      // about 4°
     /// "Still" means slower than this, for at least `stillDuration` seconds.
     private static let stillMoveSpeed: Float = 0.2      // m/s
     private static let stillTurnSpeed: Float = 0.3      // rad/s
@@ -132,7 +139,9 @@ final class FrameRecorder: @unchecked Sendable {
         if let last = lastKeyTransform {
             let moved = simd_distance(transform.columns.3, last.columns.3)
             let turned = angle(between: transform, and: last)
-            guard moved > Self.newViewDistance || turned > Self.newViewAngle else {
+            let newView = moved > Self.newViewDistance || turned > Self.newViewAngle
+            let fillsGap = (moved > Self.gapViewDistance || turned > Self.gapViewAngle) && (wantsPhoto?(frame) ?? false)
+            guard newView || fillsGap else {
                 stillSince = nil
                 return .none
             }
@@ -253,7 +262,10 @@ final class FrameRecorder: @unchecked Sendable {
 
             if let depth, let png = Self.depthPNG(depth) {
                 let depthName = "depth/\(number).png"
-                if (try? png.write(to: folder.appending(path: depthName))) != nil { record.depthFile = depthName }
+                if (try? png.write(to: folder.appending(path: depthName))) != nil {
+                    record.depthFile = depthName
+                    DispatchQueue.main.async { self.onDepthPhoto?(camera, depth) }
+                }
             }
             if let confidence, let png = Self.grayPNG(confidence) {
                 let confidenceName = "confidence/\(number).png"
