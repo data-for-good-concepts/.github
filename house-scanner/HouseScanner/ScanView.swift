@@ -1,26 +1,39 @@
+import ARKit
 import RoomPlan
 import SwiftUI
 
 struct ScanView: View {
     @EnvironmentObject private var store: ScanStore
     @Environment(\.dismiss) private var dismiss
-    @StateObject private var controller = ScanController()
+    @StateObject private var controller: ScanController
 
     @State private var showingNamePrompt = false
     @State private var showingDiscardConfirm = false
     @State private var scanName = ""
     @State private var isSaving = false
 
+    /// The scan being added to, or nil for a new scan.
+    private let continuing: SavedScan?
     /// Called with the saved scan right before the scanner closes.
-    var onSaved: (SavedScan) -> Void
+    private let onSaved: (SavedScan) -> Void
+
+    init(continuing: SavedScan? = nil, onSaved: @escaping (SavedScan) -> Void) {
+        self.continuing = continuing
+        self.onSaved = onSaved
+        _controller = StateObject(wrappedValue: ScanController(worldMap: continuing.flatMap(ScanStore.loadWorldMap)))
+    }
 
     var body: some View {
         ZStack {
-            RoomCaptureViewRepresentable(controller: controller)
-                .ignoresSafeArea()
+            if controller.phase == .relocalizing {
+                CameraPreview(session: controller.arSession).ignoresSafeArea()
+            } else {
+                RoomCaptureViewRepresentable(controller: controller).ignoresSafeArea()
+            }
 
-            VStack {
+            VStack(spacing: 12) {
                 topBar
+                captureHint
                 Spacer()
                 bottomControls
             }
@@ -35,7 +48,7 @@ struct ScanView: View {
                     .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
             }
         }
-        .onAppear { controller.startRoom() }
+        .onAppear { controller.begin() }
         .onDisappear { controller.shutdown() }
         .alert("Name this scan", isPresented: $showingNamePrompt) {
             TextField("e.g. Ground floor", text: $scanName)
@@ -71,9 +84,17 @@ struct ScanView: View {
 
             Spacer()
 
+            if controller.photoCount > 0 {
+                Label("\(controller.photoCount)", systemImage: "camera.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .monospacedDigit()
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.ultraThinMaterial, in: Capsule())
+            }
             if !controller.rooms.isEmpty {
                 Label("\(controller.rooms.count)", systemImage: "square.split.bottomrightquarter")
-                    .font(.headline)
+                    .font(.subheadline.weight(.semibold))
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
                     .background(.ultraThinMaterial, in: Capsule())
@@ -81,17 +102,60 @@ struct ScanView: View {
         }
     }
 
+    /// "Hold still" nudge while a new viewpoint needs a photo, then a short "Photo saved".
+    @ViewBuilder
+    private var captureHint: some View {
+        switch controller.captureHint {
+        case .holdStill:
+            Label("Hold still for a photo", systemImage: "camera.aperture")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.black)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(Color.yellow, in: Capsule())
+                .transition(.opacity)
+        case .photoSaved:
+            Label("Photo saved", systemImage: "checkmark.circle.fill")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+                .background(Color.green, in: Capsule())
+                .transition(.opacity)
+        case .none:
+            EmptyView()
+        }
+    }
+
     @ViewBuilder
     private var bottomControls: some View {
         switch controller.phase {
+        case .relocalizing:
+            VStack(spacing: 10) {
+                ProgressView()
+                Text("Lining up with your earlier scan")
+                    .font(.headline)
+                Text(controller.relocalizationMessage)
+                    .font(.footnote)
+                    .multilineTextAlignment(.center)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+
         case .idle:
-            bigButton("Start scanning", systemImage: "camera.viewfinder") {
-                controller.startRoom()
+            VStack(spacing: 12) {
+                if controller.isContinuing {
+                    hint("Lined up with your earlier scan. New rooms will join onto it.")
+                }
+                bigButton("Start scanning", systemImage: "camera.viewfinder") {
+                    controller.startRoom()
+                }
             }
 
         case .scanning:
             VStack(spacing: 12) {
-                hint("Move slowly around the room. Point the camera at every wall, door, window and piece of furniture. The camera is recording photos for textures: hold still for a moment now and then.")
+                hint("Move slowly. Sweep each wall from floor to ceiling. When the yellow sign appears, hold still for a moment.")
                 bigButton("Done with this room", systemImage: "checkmark.circle.fill") {
                     controller.finishRoom()
                 }
@@ -104,14 +168,20 @@ struct ScanView: View {
 
         case .roomDone:
             VStack(spacing: 12) {
-                hint("To add another room, walk into it through the doorway, then tap Scan next room. Rooms scanned in one go are joined together.")
+                hint(controller.mapIsGoodForContinuing
+                     ? "To add another room, walk into it through the doorway, then tap Scan next room. Rooms scanned in one go are joined together."
+                     : "To add another room, walk into it through the doorway, then tap Scan next room. Before saving, look around a little more so you can add rooms to this scan later.")
                 HStack(spacing: 12) {
                     bigButton("Scan next room", systemImage: "plus.circle.fill", prominent: false) {
                         controller.startRoom()
                     }
-                    bigButton("Finish & save", systemImage: "square.and.arrow.down.fill") {
-                        scanName = ""
-                        showingNamePrompt = true
+                    bigButton(continuing == nil ? "Finish & save" : "Add to scan", systemImage: "square.and.arrow.down.fill") {
+                        if continuing == nil {
+                            scanName = ""
+                            showingNamePrompt = true
+                        } else {
+                            save()
+                        }
                     }
                 }
             }
@@ -143,8 +213,14 @@ struct ScanView: View {
         isSaving = true
         Task {
             do {
+                let worldMap = await controller.currentWorldMap()
                 let capture = await controller.finishRecording()
-                let scan = try await store.save(rooms: controller.rooms, name: scanName, capture: capture)
+                let scan: SavedScan
+                if let continuing {
+                    scan = try await store.append(rooms: controller.rooms, to: continuing, capture: capture, worldMap: worldMap)
+                } else {
+                    scan = try await store.save(rooms: controller.rooms, name: scanName, capture: capture, worldMap: worldMap)
+                }
                 isSaving = false
                 onSaved(scan)
                 dismiss()

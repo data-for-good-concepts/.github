@@ -4,21 +4,41 @@ import SwiftUI
 
 /// Drives the RoomPlan scanner. All rooms are scanned in one AR session, so they share
 /// the same coordinate system and line up with each other in the floor plan and 3D model.
+///
+/// To add rooms to an earlier scan, pass its saved ARWorldMap: ARKit first recognises the
+/// place again (relocalisation) and then carries on in the earlier scan's coordinates.
 final class ScanController: NSObject, ObservableObject, RoomCaptureViewDelegate {
     enum Phase {
-        case idle        // not scanning yet
-        case scanning    // the camera is capturing a room
-        case processing  // RoomPlan is building the room model
-        case roomDone    // a room is finished; scan another or save
+        case relocalizing // continuing an earlier scan: waiting for ARKit to recognise the place
+        case idle         // ready to scan
+        case scanning     // the camera is capturing a room
+        case processing   // RoomPlan is building the room model
+        case roomDone     // a room is finished; scan another or save
     }
 
-    @Published var phase: Phase = .idle
+    enum CaptureHint: Equatable {
+        case none
+        case holdStill
+        case photoSaved
+    }
+
+    @Published var phase: Phase
     @Published var rooms: [CapturedRoom] = []
     @Published var errorMessage: String?
+    @Published var captureHint: CaptureHint = .none
+    @Published var photoCount = 0
+    @Published var relocalizationMessage = "Starting the camera…"
+    /// True once ARKit has seen enough of the place for this scan to be continued later.
+    @Published var mapIsGoodForContinuing = false
 
-    private let arSession = ARSession()
+    let arSession = ARSession()
+    let isContinuing: Bool
+    private let worldMap: ARWorldMap?
     private var recorder: FrameRecorder?
     private var displayLink: CADisplayLink?
+    private var relocalizedSince: TimeInterval?
+    private var photoSavedUntil: TimeInterval = 0
+    private let haptics = UIImpactFeedbackGenerator(style: .light)
 
     private(set) lazy var captureView: RoomCaptureView = {
         let view = RoomCaptureView(frame: .zero, arSession: arSession)
@@ -26,18 +46,41 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureViewDelegate 
         return view
     }()
 
-    override init() {
+    init(worldMap: ARWorldMap? = nil) {
+        self.worldMap = worldMap
+        self.isContinuing = worldMap != nil
+        self.phase = worldMap == nil ? .idle : .relocalizing
         super.init()
     }
 
     // RoomCaptureViewDelegate requires NSCoding; there is nothing to encode.
     required init?(coder: NSCoder) {
+        worldMap = nil
+        isContinuing = false
+        phase = .idle
         super.init()
     }
 
     func encode(with coder: NSCoder) {}
 
     // MARK: - Controls
+
+    /// Called when the scan screen appears.
+    func begin() {
+        let link = CADisplayLink(target: self, selector: #selector(tick))
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 15, maximum: 30, preferred: 30)
+        link.add(to: .main, forMode: .common)
+        displayLink = link
+        haptics.prepare()
+
+        if let worldMap {
+            let configuration = ARWorldTrackingConfiguration()
+            configuration.initialWorldMap = worldMap
+            arSession.run(configuration, options: [.resetTracking, .removeExistingAnchors])
+        } else {
+            startRoom()
+        }
+    }
 
     func startRoom() {
         guard phase == .idle || phase == .roomDone else { return }
@@ -46,40 +89,10 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureViewDelegate 
         startRecordingIfNeeded()
     }
 
-    // MARK: - Video and photo recording
-
-    /// Records from the first room until the scan is saved, including walking between rooms.
-    private func startRecordingIfNeeded() {
-        guard recorder == nil else { return }
-        do {
-            recorder = try FrameRecorder()
-        } catch {
-            print("Camera recording unavailable: \(error)")
-            return
-        }
-        let link = CADisplayLink(target: self, selector: #selector(captureFrame))
-        link.preferredFrameRateRange = CAFrameRateRange(minimum: 15, maximum: 30, preferred: 30)
-        link.add(to: .main, forMode: .common)
-        displayLink = link
-    }
-
-    @objc private func captureFrame() {
-        guard let frame = arSession.currentFrame else { return }
-        recorder?.process(frame)
-    }
-
-    /// Stops recording and returns the folder with the video and photos, if anything was recorded.
-    func finishRecording() async -> URL? {
-        displayLink?.invalidate()
-        displayLink = nil
-        guard let recorder else { return nil }
-        self.recorder = nil
-        return await recorder.finish()
-    }
-
     func finishRoom() {
         guard phase == .scanning else { return }
         phase = .processing
+        captureHint = .none
         // Keep the AR session running so the next room lines up with this one.
         captureView.captureSession.stop(pauseARSession: false)
     }
@@ -93,6 +106,105 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureViewDelegate 
             captureView.captureSession.stop()
         }
         arSession.pause()
+    }
+
+    // MARK: - Every frame
+
+    @objc private func tick() {
+        guard let frame = arSession.currentFrame else { return }
+
+        let mapGood: Bool
+        switch frame.worldMappingStatus {
+        case .mapped, .extending: mapGood = true
+        default: mapGood = false
+        }
+        if mapGood != mapIsGoodForContinuing { mapIsGoodForContinuing = mapGood }
+
+        if phase == .relocalizing {
+            updateRelocalization(frame)
+            return
+        }
+
+        guard let recorder else { return }
+        let hint = recorder.process(frame)
+        let now = CACurrentMediaTime()
+        let wanted: CaptureHint
+        if now < photoSavedUntil {
+            wanted = .photoSaved
+        } else if phase == .scanning, hint == .holdStill {
+            wanted = .holdStill
+        } else {
+            wanted = .none
+        }
+        if wanted != captureHint { captureHint = wanted }
+    }
+
+    private func updateRelocalization(_ frame: ARFrame) {
+        let message: String
+        switch frame.camera.trackingState {
+        case .normal:
+            let since = relocalizedSince ?? frame.timestamp
+            relocalizedSince = since
+            // Require a stable fix for a moment before trusting it.
+            if frame.timestamp - since > 1.0 {
+                phase = .idle
+                haptics.impactOccurred()
+                return
+            }
+            message = "Found it. Hold on…"
+        case .limited(.relocalizing):
+            relocalizedSince = nil
+            message = "Point the camera at a room you already scanned and move slowly around it."
+        case .limited(.insufficientFeatures):
+            relocalizedSince = nil
+            message = "Not enough detail to recognise. Turn on lights or point at furniture."
+        case .limited(.excessiveMotion):
+            relocalizedSince = nil
+            message = "Move more slowly."
+        case .limited(.initializing):
+            relocalizedSince = nil
+            message = "Starting the camera…"
+        default:
+            relocalizedSince = nil
+            message = "Point the camera at a room you already scanned."
+        }
+        if message != relocalizationMessage { relocalizationMessage = message }
+    }
+
+    // MARK: - Video and photo recording
+
+    /// Records from the first room until the scan is saved, including walking between rooms.
+    private func startRecordingIfNeeded() {
+        guard recorder == nil else { return }
+        do {
+            let recorder = try FrameRecorder()
+            recorder.onPhotoSaved = { [weak self] in
+                guard let self else { return }
+                self.photoCount += 1
+                self.photoSavedUntil = CACurrentMediaTime() + 0.7
+                self.captureHint = .photoSaved
+                self.haptics.impactOccurred()
+            }
+            self.recorder = recorder
+        } catch {
+            print("Camera recording unavailable: \(error)")
+        }
+    }
+
+    /// Stops recording and returns the folder with the video and photos, if anything was recorded.
+    func finishRecording() async -> URL? {
+        displayLink?.invalidate()
+        displayLink = nil
+        guard let recorder else { return nil }
+        self.recorder = nil
+        return await recorder.finish()
+    }
+
+    /// ARKit's map of the place, saved so this scan can be continued later.
+    func currentWorldMap() async -> ARWorldMap? {
+        await withCheckedContinuation { (done: CheckedContinuation<ARWorldMap?, Never>) in
+            arSession.getCurrentWorldMap { map, _ in done.resume(returning: map) }
+        }
     }
 
     // MARK: - RoomCaptureViewDelegate
@@ -123,4 +235,18 @@ struct RoomCaptureViewRepresentable: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: RoomCaptureView, context: Context) {}
+}
+
+/// Plain camera view, used while ARKit recognises the place before RoomPlan starts.
+struct CameraPreview: UIViewRepresentable {
+    let session: ARSession
+
+    func makeUIView(context: Context) -> ARSCNView {
+        let view = ARSCNView(frame: .zero)
+        view.session = session
+        view.automaticallyUpdatesLighting = false
+        return view
+    }
+
+    func updateUIView(_ uiView: ARSCNView, context: Context) {}
 }

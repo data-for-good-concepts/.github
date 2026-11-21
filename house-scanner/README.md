@@ -6,7 +6,8 @@ An iPhone app that scans your home with the LiDAR sensor using Apple's RoomPlan.
 - 2D floor plan with wall lengths, doors, windows and furniture
 - Floor area, ceiling height, and counts of doors, windows and furniture
 - View the model in 3D or place it in AR on a table
-- **Records the camera while scanning**: an MP4 video plus sharp still photos with the exact camera position, used to put real textures on walls and floors in the web viewer
+- **Records the camera while scanning**: an MP4 video plus sharp still photos with the exact camera position, used to put real textures on walls and floors in the web viewer. A yellow **Hold still for a photo** sign appears whenever the phone reaches a new viewpoint, and blurry photos are thrown away.
+- **Add rooms later**: open a scan and tap *Add rooms to this scan*. The phone recognises the place from the saved ARKit world map and new rooms join onto the earlier ones.
 - Export as **JSON** (for 3D web apps like three.js), **DXF** (CAD floor plan with 3D walls) or **USDZ** (3D model). Send them by AirDrop to your Mac. They're also in the Files app under *On My iPhone → House Scanner*.
 
 ## What you need
@@ -36,7 +37,20 @@ An iPhone app that scans your home with the LiDAR sensor using Apple's RoomPlan.
 - Move slowly and sweep the camera from floor to ceiling. Make sure every wall corner has been seen.
 - **Several rooms:** after *Done with this room*, walk through the doorway into the next room, then tap *Scan next room*. Do all rooms in one session so they line up.
 - Close cupboards and keep doors in a consistent position (fully open or closed).
-- **For good textures:** sweep the camera up to the ceiling and down to the floor on every wall, and pause briefly now and then. Photos are only taken while the phone is fairly still.
+- **For good textures:** sweep the camera up to the ceiling and down to the floor on every wall. When the yellow *Hold still for a photo* sign appears, stop for a moment until it turns green.
+
+## Scanning over several sessions
+
+Rooms scanned in one go always line up, because the phone keeps tracking the whole time. To continue on another day:
+
+1. Before saving, look around the last room a little (the app reminds you if ARKit hasn't mapped enough yet). The save stores ARKit's map of the place (`worldmap.arexperience`).
+2. Later, open the scan and tap **Add rooms to this scan**.
+3. **Start in a room you already scanned** and move slowly. The app waits until ARKit recognises the place ("Lined up with your earlier scan") before it lets you scan.
+4. Walk on into the new rooms and scan them. Tap **Add to scan** when done.
+
+The new rooms, photos and video are added to the same scan in the same coordinates, so the floor plan, merged 3D model and textured web view all join up.
+
+For reliable recognition: similar lighting to the first session (daylight vs. lamps matters), furniture not moved much, and start somewhere with plenty of detail (not a blank wall).
 
 ## Export formats
 
@@ -49,9 +63,10 @@ Every scan folder contains:
 | `house.usdz`, `room-N.usdz` | Apple 3D models (merged house and each room) |
 | `rooms.json` | Apple's raw RoomPlan data |
 | `house-scan.zip` | `house-scene.json` + `keyframes.json` + `keyframes/*.jpg`. Open it in the web viewer for textured walls and floors. |
-| `video.mp4` | The camera feed recorded during the scan (HEVC) |
-| `video-poses.json` | Camera position and lens data for every video frame |
-| `keyframes/*.jpg`, `keyframes.json` | Sharp still photos (960 px wide) taken whenever the phone moved 30 cm or turned 15°, with camera position and lens data |
+| `video.mp4`, `video-2.mp4`… | The camera feed of each scanning session (HEVC) |
+| `video-poses.json`, `video-poses-2.json`… | Camera position and lens data for every video frame |
+| `worldmap.arexperience` | ARKit's map of the place, used to line up later sessions |
+| `keyframes/*.jpg`, `keyframes.json` | Sharp still photos (960 px wide) from all sessions, taken when the phone has moved 45 cm or turned 20° and is held still, with camera position and lens data |
 
 ## Files
 

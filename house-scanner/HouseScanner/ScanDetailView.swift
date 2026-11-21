@@ -7,19 +7,32 @@ struct ScanDetailView: View {
     @EnvironmentObject private var store: ScanStore
     @Environment(\.dismiss) private var dismiss
 
-    let scan: SavedScan
+    /// The scan as it was when opened; `scan` below always reads the latest saved version.
+    let initialScan: SavedScan
 
     @State private var rooms: [CapturedRoom] = []
     @State private var loadError: String?
     @State private var previewURL: URL?
+    @State private var videoURL: URL?
     @State private var showMeasurements = true
     @State private var showingRename = false
     @State private var newName = ""
     @State private var showingDeleteConfirm = false
-    @State private var showingVideo = false
+    @State private var showingAddRooms = false
+
+    init(scan: SavedScan) {
+        initialScan = scan
+    }
+
+    /// Picks up renames and added rooms.
+    private var scan: SavedScan {
+        store.scans.first { $0.id == initialScan.id } ?? initialScan
+    }
 
     var body: some View {
+        let scan = self.scan
         let summary = ScanSummary(rooms: rooms)
+        let videos = scan.videoURLs
 
         List {
             Section {
@@ -32,6 +45,19 @@ struct ScanDetailView: View {
                 Text("Floor plan")
             } footer: {
                 if let loadError { Text(loadError).foregroundStyle(.red) }
+            }
+
+            Section {
+                Button {
+                    showingAddRooms = true
+                } label: {
+                    Label("Add rooms to this scan", systemImage: "plus.square.on.square")
+                }
+                .disabled(!scan.canAddRooms || !RoomCaptureSession.isSupported)
+            } footer: {
+                Text(scan.canAddRooms
+                     ? "Start in a room you already scanned so the phone can recognise it. New rooms join onto this scan, with their photos and video."
+                     : "This scan has no saved map of the place, so new rooms can't be lined up with it.")
             }
 
             Section {
@@ -52,7 +78,6 @@ struct ScanDetailView: View {
                         }
                     }
                 }
-
             } header: {
                 Text("3D model")
             } footer: {
@@ -61,20 +86,29 @@ struct ScanDetailView: View {
                 }
             }
 
+            if !videos.isEmpty {
+                Section("Camera video") {
+                    ForEach(Array(videos.enumerated()), id: \.element) { index, url in
+                        HStack {
+                            Button {
+                                videoURL = url
+                            } label: {
+                                Label(videos.count == 1 ? "Watch video" : "Watch session \(index + 1)", systemImage: "play.rectangle")
+                            }
+                            Spacer()
+                            ShareLink(item: url) {
+                                Image(systemName: "square.and.arrow.up")
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                }
+            }
+
             Section {
                 if scan.hasPackage {
                     ShareLink(item: scan.packageURL) {
                         exportLabel("Scan with textures", "ZIP · open in the web viewer for textured walls and floors", "photo.on.rectangle")
-                    }
-                }
-                if scan.hasVideo {
-                    Button {
-                        showingVideo = true
-                    } label: {
-                        Label("Watch camera video", systemImage: "play.rectangle")
-                    }
-                    ShareLink(item: scan.videoURL) {
-                        exportLabel("Camera video", "MP4 · recorded during the scan", "video")
                     }
                 }
                 ShareLink(item: scan.sceneJSONURL) {
@@ -104,6 +138,9 @@ struct ScanDetailView: View {
                 if summary.openings > 0 {
                     LabeledContent("Open doorways", value: "\(summary.openings)")
                 }
+                if let sessions = scan.meta.sessionCount, sessions > 1 {
+                    LabeledContent("Scanning sessions", value: "\(sessions)")
+                }
                 LabeledContent("Scanned", value: scan.meta.date.formatted(date: .long, time: .shortened))
             }
 
@@ -117,7 +154,7 @@ struct ScanDetailView: View {
 
             Section {
                 Button("Rename") {
-                    newName = currentName
+                    newName = scan.meta.name
                     showingRename = true
                 }
                 Button("Delete scan", role: .destructive) {
@@ -125,13 +162,19 @@ struct ScanDetailView: View {
                 }
             }
         }
-        .navigationTitle(currentName)
+        .navigationTitle(scan.meta.name)
         .navigationBarTitleDisplayMode(.inline)
         .quickLookPreview($previewURL)
         .task { load() }
-        .sheet(isPresented: $showingVideo) {
-            VideoPlayer(player: AVPlayer(url: scan.videoURL))
-                .ignoresSafeArea()
+        .sheet(isPresented: Binding(get: { videoURL != nil }, set: { if !$0 { videoURL = nil } })) {
+            if let videoURL {
+                VideoPlayer(player: AVPlayer(url: videoURL))
+                    .ignoresSafeArea()
+            }
+        }
+        .fullScreenCover(isPresented: $showingAddRooms, onDismiss: load) {
+            ScanView(continuing: scan) { _ in }
+                .environmentObject(store)
         }
         .alert("Rename scan", isPresented: $showingRename) {
             TextField("Name", text: $newName)
@@ -144,11 +187,6 @@ struct ScanDetailView: View {
                 dismiss()
             }
         }
-    }
-
-    /// Picks up renames, since `scan` itself is a snapshot.
-    private var currentName: String {
-        store.scans.first { $0.id == scan.id }?.meta.name ?? scan.meta.name
     }
 
     private func exportLabel(_ title: String, _ detail: String, _ icon: String) -> some View {
@@ -181,8 +219,10 @@ struct ScanDetailView: View {
     }
 
     private func load() {
+        let scan = self.scan
         do {
             rooms = try store.loadRooms(for: scan)
+            loadError = nil
             let fm = FileManager.default
             if !fm.fileExists(atPath: scan.sceneJSONURL.path) || !fm.fileExists(atPath: scan.dxfURL.path) {
                 try? store.writeExports(for: scan, rooms: rooms)
