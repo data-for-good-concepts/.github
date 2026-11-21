@@ -60,6 +60,8 @@ final class FrameRecorder {
     let folder: URL
     /// Called on the main thread each time a sharp photo has been saved.
     var onPhotoSaved: (() -> Void)?
+    /// Receives every saved photo's depth, so the screen can show what has been captured.
+    var coverage: CoverageMap?
 
     // Video
     private var writer: AVAssetWriter?
@@ -252,6 +254,12 @@ final class FrameRecorder {
                 if (try? png.write(to: folder.appending(path: confidenceName))) != nil { record.confidenceFile = confidenceName }
             }
 
+            if let coverage = self.coverage, let depth,
+               let rgba = Self.smallRGBA(buffer, width: depth.width, height: depth.height, context: ciContext) {
+                coverage.integrate(depth: depth, confidence: confidence, rgba: rgba,
+                                   intrinsics: record.intrinsics, fullWidth: record.width, transform: transform)
+            }
+
             self.keyframes.append(record)
             saved = true
         }
@@ -319,6 +327,23 @@ final class FrameRecorder {
             data.append(base.advanced(by: row * stride).assumingMemoryBound(to: UInt8.self), count: width * bpp)
         }
         return Plane(width: width, height: height, bytesPerPixel: bpp, data: data)
+    }
+
+    /// The photo shrunk to the depth map's size, as RGBA bytes with the top row first.
+    private static func smallRGBA(_ buffer: CVPixelBuffer, width: Int, height: Int, context: CIContext) -> [UInt8]? {
+        let full = CIImage(cvPixelBuffer: buffer)
+        let small = full.transformed(by: CGAffineTransform(scaleX: CGFloat(width) / full.extent.width,
+                                                           y: CGFloat(height) / full.extent.height))
+        guard let image = context.createCGImage(small, from: CGRect(x: 0, y: 0, width: width, height: height)) else { return nil }
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        let drawn = pixels.withUnsafeMutableBytes { bytes -> Bool in
+            guard let bitmap = CGContext(data: bytes.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                                         bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                         bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            bitmap.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        return drawn ? pixels : nil
     }
 
     /// Float metres → 16-bit PNG in millimetres (0 = no reading).

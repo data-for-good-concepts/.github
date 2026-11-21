@@ -12,6 +12,7 @@ Video + poses                  ┘   transforms.json)           · three.js view
 An iPhone app that scans your home with the LiDAR sensor and camera and exports **everything it captured**, annotated and documented, so Claude can build a photoreal 3D rendering from it. The app itself doesn't render anything photoreal; it makes sure the raw data is complete and well described.
 
 - Scan one room, or several rooms in a row. Rooms scanned in one go are joined into a single 3D model of the house.
+- **Black canvas while scanning**: the screen starts black and shows only what has been **fully captured** (seen with confident LiDAR depth in two sharp photos from different positions), in real colour, from where you are standing. You can see at a glance what's done and what's missing. A counter shows the m² captured.
 - 2D floor plan with wall lengths, doors, windows and furniture
 - Floor area, ceiling height, and counts of doors, windows and furniture
 - View the model in 3D or place it in AR on a table
@@ -48,7 +49,7 @@ An iPhone app that scans your home with the LiDAR sensor and camera and exports 
 - Move slowly and sweep the camera from floor to ceiling. Make sure every wall corner has been seen.
 - **Several rooms:** after *Done with this room*, walk through the doorway into the next room, then tap *Scan next room*. Do all rooms in one session so they line up.
 - Close cupboards and keep doors in a consistent position (fully open or closed).
-- **For good textures:** sweep the camera up to the ceiling and down to the floor on every wall. When the yellow *Hold still for a photo* sign appears, stop for a moment until it turns green.
+- **Fill the black:** sweep the camera up to the ceiling and down to the floor on every wall. When the yellow *Hold still to reveal this area* sign appears, stop for a moment until it turns green: that area then appears on screen. Keep going until no gaps are left.
 
 ## Scanning over several sessions
 
@@ -86,7 +87,7 @@ Every scan folder contains:
 
 | File | What it does |
 |---|---|
-| `ScanController.swift` | Runs RoomPlan and keeps one AR session across rooms |
+| `ScanController.swift` | Runs RoomPlan (without its own camera view) and keeps one AR session across rooms |
 | `ScanView.swift` | Camera screen with the scan controls |
 | `ScanStore.swift` | Saves and loads scans (USDZ models + room data) |
 | `ContentView.swift` | List of saved scans |
@@ -97,6 +98,8 @@ Every scan folder contains:
 | `DXFExporter.swift` | Writes `floor-plan.dxf` |
 | `FrameRecorder.swift` | Records the video, still photos, depth and exposure during the scan |
 | `MeshExporter.swift` | Writes the LiDAR mesh as PLY |
+| `CoverageMap.swift` | Works out which areas are fully captured (3 cm grid, from each photo's LiDAR depth) |
+| `CoverageCanvas.swift` | The black scanning screen that shows captured areas as coloured points |
 | `PackageBuilder.swift` | Builds the package (`manifest.json`, `transforms.json`, ZIP) |
 | `PackageREADME.md` | The README that goes inside every package |
 

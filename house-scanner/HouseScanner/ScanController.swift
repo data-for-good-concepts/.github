@@ -7,7 +7,10 @@ import SwiftUI
 ///
 /// To add rooms to an earlier scan, pass its saved ARWorldMap: ARKit first recognises the
 /// place again (relocalisation) and then carries on in the earlier scan's coordinates.
-final class ScanController: NSObject, ObservableObject, RoomCaptureViewDelegate {
+///
+/// RoomPlan runs without its own camera view: the screen is a black canvas (`CoverageCanvas`)
+/// that shows only what has been fully captured, filling in as you scan.
+final class ScanController: NSObject, ObservableObject, RoomCaptureSessionDelegate {
     enum Phase {
         case relocalizing // continuing an earlier scan: waiting for ARKit to recognise the place
         case idle         // ready to scan
@@ -32,7 +35,13 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureViewDelegate 
     @Published var mapIsGoodForContinuing = false
     /// Triangles in ARKit's LiDAR mesh so far (shown so you can see the mesh is being captured).
     @Published var meshFaceCount = 0
+    /// Surface fully captured so far, in m².
+    @Published var capturedArea: Float = 0
+    /// RoomPlan's advice, such as "Move closer to the wall", or nil when all is well.
+    @Published var instruction: String?
 
+    let canvas = CoverageCanvas()
+    let coverage = CoverageMap()
     let arSession = ARSession()
     let isContinuing: Bool
     private let worldMap: ARWorldMap?
@@ -44,10 +53,10 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureViewDelegate 
     private var meshAnchors: [UUID: ARMeshAnchor] = [:]
     private var lastMeshCheck: TimeInterval = 0
 
-    private(set) lazy var captureView: RoomCaptureView = {
-        let view = RoomCaptureView(frame: .zero, arSession: arSession)
-        view.delegate = self
-        return view
+    private(set) lazy var captureSession: RoomCaptureSession = {
+        let session = RoomCaptureSession(arSession: arSession)
+        session.delegate = self
+        return session
     }()
 
     init(worldMap: ARWorldMap? = nil) {
@@ -55,17 +64,12 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureViewDelegate 
         self.isContinuing = worldMap != nil
         self.phase = worldMap == nil ? .idle : .relocalizing
         super.init()
+        coverage.onUpdate = { [weak self] chunks, area in
+            guard let self else { return }
+            self.canvas.apply(chunks)
+            self.capturedArea = area
+        }
     }
-
-    // RoomCaptureViewDelegate requires NSCoding; there is nothing to encode.
-    required init?(coder: NSCoder) {
-        worldMap = nil
-        isContinuing = false
-        phase = .idle
-        super.init()
-    }
-
-    func encode(with coder: NSCoder) {}
 
     // MARK: - Controls
 
@@ -88,7 +92,7 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureViewDelegate 
 
     func startRoom() {
         guard phase == .idle || phase == .roomDone else { return }
-        captureView.captureSession.run(configuration: RoomCaptureSession.Configuration())
+        captureSession.run(configuration: RoomCaptureSession.Configuration())
         phase = .scanning
         startRecordingIfNeeded()
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.ensureLiDARCapture() }
@@ -127,8 +131,9 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureViewDelegate 
         phase = .processing
         captureHint = .none
         collectMesh()
+        instruction = nil
         // Keep the AR session running so the next room lines up with this one.
-        captureView.captureSession.stop(pauseARSession: false)
+        captureSession.stop(pauseARSession: false)
     }
 
     func shutdown() {
@@ -137,7 +142,7 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureViewDelegate 
         recorder?.cancel()
         recorder = nil
         if phase == .scanning {
-            captureView.captureSession.stop()
+            captureSession.stop()
         }
         arSession.pause()
     }
@@ -158,6 +163,7 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureViewDelegate 
             updateRelocalization(frame)
             return
         }
+        canvas.follow(frame.camera)
 
         if frame.timestamp - lastMeshCheck > 1 {
             lastMeshCheck = frame.timestamp
@@ -217,6 +223,7 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureViewDelegate 
         guard recorder == nil else { return }
         do {
             let recorder = try FrameRecorder()
+            recorder.coverage = coverage
             recorder.onPhotoSaved = { [weak self] in
                 guard let self else { return }
                 self.photoCount += 1
@@ -255,34 +262,47 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureViewDelegate 
         }
     }
 
-    // MARK: - RoomCaptureViewDelegate
+    // MARK: - RoomCaptureSessionDelegate
 
-    func captureView(shouldPresent roomDataForProcessing: CapturedRoomData, error: Error?) -> Bool {
-        true
+    func captureSession(_ session: RoomCaptureSession, didProvide instruction: RoomCaptureSession.Instruction) {
+        let text: String?
+        switch instruction {
+        case .moveCloseToWall: text = "Move closer to the wall"
+        case .moveAwayFromWall: text = "Move away from the wall"
+        case .slowDown: text = "Slow down"
+        case .turnOnLight: text = "Turn on more light"
+        case .lowTexture: text = "Point at something with more detail"
+        case .normal: text = nil
+        @unknown default: text = nil
+        }
+        DispatchQueue.main.async {
+            if self.phase == .scanning, text != self.instruction { self.instruction = text }
+        }
     }
 
-    func captureView(didPresent processedResult: CapturedRoom, error: Error?) {
-        DispatchQueue.main.async {
-            if let error {
-                self.errorMessage = "This room could not be processed: \(error.localizedDescription)"
-                self.phase = self.rooms.isEmpty ? .idle : .roomDone
-            } else {
-                self.rooms.append(processedResult)
-                self.phase = .roomDone
+    /// RoomPlan has the raw data for the room: build the finished room model from it.
+    func captureSession(_ session: RoomCaptureSession, didEndWith data: CapturedRoomData, error: Error?) {
+        if let error {
+            DispatchQueue.main.async { self.roomFailed(error) }
+            return
+        }
+        Task {
+            do {
+                let room = try await RoomBuilder(options: [.beautifyObjects]).capturedRoom(from: data)
+                await MainActor.run {
+                    self.rooms.append(room)
+                    self.phase = .roomDone
+                }
+            } catch {
+                await MainActor.run { self.roomFailed(error) }
             }
         }
     }
-}
 
-/// Puts Apple's RoomCaptureView (camera + live 3D outline + coaching) into SwiftUI.
-struct RoomCaptureViewRepresentable: UIViewRepresentable {
-    let controller: ScanController
-
-    func makeUIView(context: Context) -> RoomCaptureView {
-        controller.captureView
+    private func roomFailed(_ error: Error) {
+        errorMessage = "This room could not be processed: \(error.localizedDescription)"
+        phase = rooms.isEmpty ? .idle : .roomDone
     }
-
-    func updateUIView(_ uiView: RoomCaptureView, context: Context) {}
 }
 
 /// Plain camera view, used while ARKit recognises the place before RoomPlan starts.

@@ -28,13 +28,24 @@ struct ScanView: View {
             if controller.phase == .relocalizing {
                 CameraPreview(session: controller.arSession).ignoresSafeArea()
             } else {
-                RoomCaptureViewRepresentable(controller: controller).ignoresSafeArea()
+                // Black canvas: only fully captured parts of the home appear, as they are captured.
+                CoverageCanvasView(canvas: controller.canvas).ignoresSafeArea()
             }
 
             VStack(spacing: 12) {
                 topBar
                 captureHint
+                if let instruction = controller.instruction, controller.phase == .scanning {
+                    Label(instruction, systemImage: "exclamationmark.circle")
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(.ultraThinMaterial, in: Capsule())
+                }
                 Spacer()
+                if controller.phase == .scanning, controller.capturedArea == 0 {
+                    emptyCanvasHint
+                }
                 bottomControls
             }
             .padding()
@@ -48,6 +59,7 @@ struct ScanView: View {
                     .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
             }
         }
+        .environment(\.colorScheme, .dark)
         .onAppear { controller.begin() }
         .onDisappear { controller.shutdown() }
         .alert("Name this scan", isPresented: $showingNamePrompt) {
@@ -84,6 +96,15 @@ struct ScanView: View {
 
             Spacer()
 
+            if controller.capturedArea > 0 {
+                Label(String(format: "%.1f m²", controller.capturedArea), systemImage: "square.dashed.inset.filled")
+                    .font(.subheadline.weight(.semibold))
+                    .monospacedDigit()
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .accessibilityLabel(String(format: "%.1f square metres captured", controller.capturedArea))
+            }
             if controller.meshFaceCount > 0 {
                 Label(controller.meshFaceCount >= 1000 ? "\(controller.meshFaceCount / 1000)k" : "\(controller.meshFaceCount)",
                       systemImage: "cube.transparent")
@@ -116,7 +137,7 @@ struct ScanView: View {
     private var captureHint: some View {
         switch controller.captureHint {
         case .holdStill:
-            Label("Hold still for a photo", systemImage: "camera.aperture")
+            Label("Hold still to reveal this area", systemImage: "camera.aperture")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.black)
                 .padding(.horizontal, 14)
@@ -124,7 +145,7 @@ struct ScanView: View {
                 .background(Color.yellow, in: Capsule())
                 .transition(.opacity)
         case .photoSaved:
-            Label("Photo saved", systemImage: "checkmark.circle.fill")
+            Label("Captured", systemImage: "checkmark.circle.fill")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.white)
                 .padding(.horizontal, 14)
@@ -164,7 +185,7 @@ struct ScanView: View {
 
         case .scanning:
             VStack(spacing: 12) {
-                hint("Move slowly. Sweep each wall from floor to ceiling. When the yellow sign appears, hold still for a moment.")
+                hint("Sweep each wall from floor to ceiling. Areas appear once they are fully captured: when the yellow sign shows, hold still for a moment.")
                 bigButton("Done with this room", systemImage: "checkmark.circle.fill") {
                     controller.finishRoom()
                 }
@@ -195,6 +216,22 @@ struct ScanView: View {
                 }
             }
         }
+    }
+
+    /// Shown on the black canvas until the first area has been captured.
+    private var emptyCanvasHint: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "viewfinder")
+                .font(.system(size: 40, weight: .light))
+            Text("Nothing captured yet")
+                .font(.headline)
+            Text("Point the phone at a wall and hold still. Each area appears here in colour once it has been captured from two angles.")
+                .font(.footnote)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 280)
+        }
+        .foregroundStyle(.white.opacity(0.8))
+        .padding(.bottom, 40)
     }
 
     private func hint(_ text: String) -> some View {
