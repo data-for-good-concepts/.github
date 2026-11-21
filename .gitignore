@@ -1,0 +1,5 @@
+.DS_Store
+.build-dd/
+xcuserdata/
+house-scanner/HouseScanner.xcodeproj/project.xcworkspace/
+house-scanner/web-viewer/.local/

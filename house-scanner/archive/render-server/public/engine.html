@@ -1,0 +1,929 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>House Renderer Engine</title>
+<style>
+  /* Runs inside the server's headless browser. In stream mode this page's pixels are what the client sees. */
+  :root {
+    --scene: #e6eae8; --surface: rgba(250, 252, 251, 0.92); --surface-solid: #fafcfb; --line: rgba(32, 52, 52, 0.14);
+    --fg: #172423; --muted: #5b6d6b; --accent: #2f6f73; --accent-fg: #ffffff; --chip-off: rgba(32, 52, 52, 0.06); --danger: #b3412f;
+    --font-display: "Space Grotesk", "Noto Sans", "DejaVu Sans", system-ui, sans-serif;
+    --font-body: "Inter", "Noto Sans", "DejaVu Sans", system-ui, sans-serif;
+    --font-data: "JetBrains Mono", "DejaVu Sans Mono", "Noto Sans Mono", monospace;
+    --it: var(--inset-top, 0px); --ib: var(--inset-bottom, 0px); --il: var(--inset-left, 0px); --ir: var(--inset-right, 0px);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --scene: #131a1a; --surface: rgba(26, 34, 34, 0.9); --surface-solid: #1a2222; --line: rgba(200, 225, 222, 0.14);
+      --fg: #e4eeec; --muted: #98aba8; --accent: #7cc4c2; --accent-fg: #0d1a1a; --chip-off: rgba(200, 225, 222, 0.07); --danger: #f08a76;
+      color-scheme: dark;
+    }
+  }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--scene); color: var(--fg); font-family: var(--font-body); font-size: 14px; overflow: hidden; }
+  #c { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+
+  .bar { position: fixed; top: 0; left: 0; right: 0; z-index: 5; display: flex; gap: 12px; pointer-events: none;
+    padding: calc(var(--it) + 12px) max(16px, var(--ir)) 12px max(16px, var(--il)); }
+  .title-block { min-width: 0; flex: 1; margin-right: 112px; pointer-events: auto;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 8px 14px; }
+  .title-block h1 { margin: 0; font: 600 17px/1.25 var(--font-display); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .title-block p { margin: 2px 0 0; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  #info { position: fixed; z-index: 6; left: 50%; transform: translateX(-50%); top: calc(var(--it) + 84px);
+    background: var(--surface-solid); border: 1px solid var(--line); border-radius: 999px; padding: 8px 14px; font-size: 13px;
+    max-width: calc(100% - 32px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #info .dims { font-family: var(--font-data); font-size: 12px; color: var(--muted); margin-left: 6px; }
+
+  .sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; background: var(--surface); border-top: 1px solid var(--line);
+    border-radius: 18px 18px 0 0; display: grid; gap: 12px;
+    padding: 6px max(16px, var(--ir)) calc(var(--ib) + 14px) max(16px, var(--il)); }
+  @media (min-width: 800px) { .sheet { left: 50%; right: auto; width: 760px; transform: translateX(-50%); bottom: 16px; border-radius: 18px; border: 1px solid var(--line); padding-bottom: 14px; } }
+  .grab { justify-self: center; width: 100%; height: 22px; border: 0; background: none; display: grid; place-items: center; padding: 0; cursor: pointer; }
+  .grab span { display: block; width: 40px; height: 5px; border-radius: 3px; background: var(--line); }
+  .sheet.collapsed .collapsible { display: none; }
+  .stats { display: flex; gap: 20px; overflow: hidden; }
+  .stat { flex: none; }
+  .stat .v { font-family: var(--font-data); font-weight: 500; font-size: 18px; font-variant-numeric: tabular-nums; }
+  .stat .k { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-top: 2px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .chips { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; padding: 2px; }
+  .chips::-webkit-scrollbar { display: none; }
+  .chip { flex: none; font: 500 13px/1 var(--font-body); color: var(--fg); border: 1px solid var(--line); background: var(--chip-off);
+    border-radius: 999px; padding: 8px 12px; display: inline-flex; align-items: center; gap: 7px; cursor: pointer; }
+  .chip .sw { width: 10px; height: 10px; border-radius: 3px; }
+  .chip .a { font-family: var(--font-data); font-size: 11px; color: var(--muted); }
+  .chip[aria-pressed="false"] { opacity: .45; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 12px; padding: 3px; background: var(--chip-off); }
+  .seg button { font: 600 13px/1 var(--font-body); color: var(--muted); background: none; border: 0; padding: 9px 13px; border-radius: 9px; cursor: pointer; }
+  .seg button[aria-pressed="true"] { background: var(--surface-solid); color: var(--fg); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+  .switch { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; cursor: pointer; user-select: none; }
+  .switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+  .switch span { width: 38px; height: 22px; border-radius: 11px; background: var(--line); position: relative; }
+  .switch span::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--surface-solid); box-shadow: 0 1px 2px rgba(0,0,0,.25); }
+  .switch input:checked + span { background: var(--accent); }
+  .switch input:checked + span::after { transform: translateX(16px); }
+  .btn { font: 600 14px/1 var(--font-body); border-radius: 12px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); padding: 11px 14px; cursor: pointer; }
+  .spacer { flex: 1; }
+  .hint { font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<header class="bar">
+  <div class="title-block">
+    <h1 id="name">Loading…</h1>
+    <p id="sub">Rendered in the cloud</p>
+  </div>
+</header>
+
+<div id="info" hidden></div>
+
+<section class="sheet" id="sheet">
+  <button class="grab" id="grab" aria-label="Show or hide controls"><span></span></button>
+  <div class="stats" id="stats"></div>
+  <div class="collapsible" style="display:grid;gap:12px">
+    <div class="chips" id="rooms"></div>
+    <div class="row">
+      <div class="seg" role="group" aria-label="View">
+        <button id="v-orbit" aria-pressed="true">3D</button>
+        <button id="v-top" aria-pressed="false">Plan</button>
+        <button id="v-walk" aria-pressed="false">Walk</button>
+      </div>
+      <label class="switch" for="cut"><input id="cut" type="checkbox" checked><span></span>Cutaway</label>
+      <label class="switch" for="tex" id="tex-wrap" hidden><input id="tex" type="checkbox" checked><span></span>Photos</label>
+    </div>
+    <div class="row">
+      <div class="seg" role="group" aria-label="Furniture" id="furn" hidden>
+        <button id="f-scan" aria-pressed="true">Scanned</button>
+        <button id="f-boxes" aria-pressed="false">Boxes</button>
+      </div>
+      <div class="spacer"></div>
+      <button class="btn" id="reset">Reset view</button>
+    </div>
+    <div class="hint" id="hint"></div>
+  </div>
+</section>
+
+<script type="importmap">
+{ "imports": { "three": "/vendor/three/build/three.module.js", "three/addons/": "/vendor/three/examples/jsm/" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+const params = new URLSearchParams(location.search);
+const MODE = params.get('mode');
+const SCAN = params.get('scan');
+const KEY = params.get('key');
+const api = (p, extra = '') => `/api/scans/${SCAN}/${p}?key=${KEY}${extra}`;
+async function fetchOk(p) {
+  const r = await fetch(api(p));
+  if (!r.ok) throw new Error(`could not load ${p} (${r.status})`);
+  return r;
+}
+const progress = (stage, done = 0, total = 0) => window.reportProgress?.(stage, done, total);
+const $ = (id) => document.getElementById(id);
+const nextTick = () => new Promise((r) => setTimeout(r, 0));
+
+const WALL_T = 0.1, EYE = 1.6, CUT = 1.25;
+const MAT = { wall: 0xf3f1ec, wallEdge: 0x8f9a98, door: 0xa47b55, glass: 0x9fd3e6,
+  floors: [0xd9bf98, 0xc9d3c1, 0xd6c3c9, 0xc4d0d8, 0xd8cfb4, 0xc9c4dc] };
+const OBJ_COLORS = { sofa: 0x7f97ad, chair: 0x9aa98a, table: 0xa9865f, bed: 0x9f8fb8, storage: 0xb8a58a, refrigerator: 0xc8d0d4,
+  stove: 0x6f7478, oven: 0x6f7478, dishwasher: 0xb9c1c5, sink: 0xaebfc9, washerDryer: 0xc2cacf, toilet: 0xe6e8ea,
+  bathtub: 0xe2e6ea, television: 0x3e4447, fireplace: 0x9b6b5a, stairs: 0xb5a58f };
+const MESH_CLASSES = ['none', 'wall', 'floor', 'ceiling', 'table', 'seat', 'window', 'door'];
+
+// ---------- renderer ----------
+const canvas = $('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio || 1);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, 1, 0.05, 300);
+const controls = new OrbitControls(camera, canvas);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+scene.add(new THREE.HemisphereLight(0xffffff, 0xb8aa98, 1.6));
+const sun = new THREE.DirectionalLight(0xffffff, 1.4);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.bias = -0.0005;
+scene.add(sun, sun.target);
+const cutPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), CUT);
+
+let dirty = true;
+const invalidate = () => { dirty = true; };
+controls.addEventListener('change', invalidate);
+
+function resize() {
+  renderer.setSize(innerWidth, innerHeight, false);
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  invalidate();
+}
+addEventListener('resize', resize);
+resize();
+
+let grid;
+function applyTheme() {
+  const bg = new THREE.Color(getComputedStyle(document.documentElement).getPropertyValue('--scene').trim() || '#e6eae8');
+  scene.background = bg;
+  const dark = bg.getHSL({}).l < 0.4;
+  if (grid) { scene.remove(grid); grid.geometry.dispose(); }
+  if (house) {
+    const size = Math.ceil(Math.max(house.size.x, house.size.z) + 6);
+    grid = new THREE.GridHelper(size, size, dark ? 0x2c3838 : 0xc4cecb, dark ? 0x222c2c : 0xd3dbd9);
+    grid.position.set(house.center.x, house.floorY - 0.005, house.center.z);
+    scene.add(grid);
+  }
+  invalidate();
+}
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
+
+// ---------- house model ----------
+// house: { group, data, rooms[{group, area, color}], pickables, floors, decals, boxes, scanMesh,
+//          wallSurfaces, floorSurfaces, center, size, floorY }
+let house = null;
+const floorMaterials = new WeakMap();   // floor mesh → { photo, plain }
+const v3 = (a) => new THREE.Vector3(a[0], a[1], a[2]);
+const mat4 = (a) => new THREE.Matrix4().fromArray(a);
+const niceName = (c) => { const s = String(c || 'object').replace(/([a-z])([A-Z])/g, '$1 $2'); return s[0].toUpperCase() + s.slice(1).toLowerCase(); };
+function polygonArea(pts) {
+  let s = 0;
+  for (let i = 0; i < pts.length; i++) { const a = pts[i], b = pts[(i + 1) % pts.length]; s += a[0] * b[2] - b[0] * a[2]; }
+  return Math.abs(s) / 2;
+}
+
+function finishHouse(h) {
+  const box = new THREE.Box3().setFromObject(h.group);
+  h.center = box.getCenter(new THREE.Vector3());
+  h.size = box.getSize(new THREE.Vector3());
+  h.floorY = box.min.y;
+  const r = Math.max(h.size.x, h.size.z) * 0.75 + 2;
+  sun.position.set(h.center.x + r * 0.6, box.max.y + r * 1.2, h.center.z + r * 0.9);
+  sun.target.position.copy(h.center);
+  Object.assign(sun.shadow.camera, { left: -r, right: r, top: r, bottom: -r, near: 0.5, far: r * 4 });
+  sun.shadow.camera.updateProjectionMatrix();
+  cutPlane.constant = h.floorY + CUT;
+}
+
+// Builds walls (with door/window holes), floors, fittings and furniture boxes from house-scene.json.
+function build(data) {
+  const group = new THREE.Group();
+  group.name = 'house';
+  const h = { group, data, rooms: [], pickables: [], floors: [], decals: [], boxes: [], scanMesh: null, wallSurfaces: [], floorSurfaces: [] };
+  const clip = { clippingPlanes: [cutPlane] };
+  const wallMat = new THREE.MeshStandardMaterial({ color: MAT.wall, roughness: 0.92, side: THREE.DoubleSide, ...clip });
+  const edgeMat = new THREE.LineBasicMaterial({ color: MAT.wallEdge, transparent: true, opacity: 0.55, ...clip });
+  const doorMat = new THREE.MeshStandardMaterial({ color: MAT.door, roughness: 0.7, ...clip });
+  const glassMat = new THREE.MeshPhysicalMaterial({ color: MAT.glass, transparent: true, opacity: 0.35, roughness: 0.05, side: THREE.DoubleSide, depthWrite: false, ...clip });
+
+  const allWalls = data.rooms.flatMap((r) => r.walls || []);
+  const wallInfo = new Map(allWalls.map((w) => { const m = mat4(w.matrix); return [w.id, { w, m, inv: m.clone().invert(), holes: [] }]; }));
+  for (const f of data.rooms.flatMap((r) => [...(r.doors || []), ...(r.windows || []), ...(r.openings || [])])) {
+    let target = f.parentId && wallInfo.get(f.parentId);
+    if (!target) {
+      let best = Infinity;
+      for (const info of wallInfo.values()) {
+        const p = v3(f.position).applyMatrix4(info.inv);
+        if (Math.abs(p.x) <= info.w.size[0] / 2 + 0.05 && Math.abs(p.z) < 0.3 && Math.abs(p.z) < best) { best = Math.abs(p.z); target = info; }
+      }
+    }
+    if (target) target.holes.push(f);
+  }
+
+  data.rooms.forEach((room, ri) => {
+    const rg = new THREE.Group();
+    rg.name = `room-${ri}`;
+    const color = MAT.floors[ri % MAT.floors.length];
+    let area = 0;
+    for (const f of room.floors || []) {
+      let geom;
+      if (f.corners?.length >= 3) {
+        geom = new THREE.ShapeGeometry(new THREE.Shape(f.corners.map((c) => new THREE.Vector2(c[0], c[2]))));
+        geom.rotateX(Math.PI / 2);
+        geom.translate(0, f.corners.reduce((s, c) => s + c[1], 0) / f.corners.length, 0);
+        area += polygonArea(f.corners);
+      } else {
+        geom = new THREE.BoxGeometry(...f.size.map((s) => Math.max(s, 0.01)));
+        geom.applyMatrix4(mat4(f.matrix));
+        const s = f.size.filter((x) => x > 0.01);
+        area += (s[0] || 0) * (s[1] || 0);
+      }
+      const mesh = new THREE.Mesh(geom, new THREE.MeshStandardMaterial({ color, roughness: 0.85, side: THREE.DoubleSide }));
+      mesh.name = `floor-${ri}`;
+      mesh.receiveShadow = true;
+      Object.assign(mesh.userData, { floor: true, kind: 'floor', roomIndex: ri, plainColor: color });
+      h.floors.push(mesh);
+      if (f.corners?.length >= 3) h.floorSurfaces.push({ mesh, corners: f.corners, roomIndex: ri });
+      rg.add(mesh);
+    }
+    for (const w of room.walls || []) {
+      const info = wallInfo.get(w.id);
+      const W = w.size[0], H = w.size[1];
+      const shape = new THREE.Shape();
+      shape.moveTo(-W / 2, -H / 2); shape.lineTo(W / 2, -H / 2); shape.lineTo(W / 2, H / 2); shape.lineTo(-W / 2, H / 2); shape.closePath();
+      const placed = [];
+      for (const f of info.holes) {
+        const p = v3(f.position).applyMatrix4(info.inv), m = 0.02;
+        const x0 = Math.max(p.x - f.size[0] / 2, -W / 2 + m), x1 = Math.min(p.x + f.size[0] / 2, W / 2 - m);
+        const y0 = Math.max(p.y - f.size[1] / 2, -H / 2 + m), y1 = Math.min(p.y + f.size[1] / 2, H / 2 - m);
+        if (x1 - x0 < 0.05 || y1 - y0 < 0.05) continue;
+        if (placed.some((r) => x0 < r[1] && x1 > r[0] && y0 < r[3] && y1 > r[2])) continue;
+        placed.push([x0, x1, y0, y1]);
+        const hole = new THREE.Path();
+        hole.moveTo(x0, y0); hole.lineTo(x0, y1); hole.lineTo(x1, y1); hole.lineTo(x1, y0); hole.closePath();
+        shape.holes.push(hole);
+      }
+      h.wallSurfaces.push({ id: w.id, m: info.m, W, H, holes: placed, shape, group: rg });
+      const geom = new THREE.ExtrudeGeometry(shape, { depth: WALL_T, bevelEnabled: false });
+      geom.translate(0, 0, -WALL_T / 2);
+      geom.applyMatrix4(info.m);
+      const mesh = new THREE.Mesh(geom, wallMat);
+      mesh.name = `wall-${w.id}`;
+      Object.assign(mesh.userData, { kind: 'wall', id: w.id });
+      mesh.castShadow = true; mesh.receiveShadow = true;
+      rg.add(mesh);
+      const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geom, 25), edgeMat);
+      edges.userData.kind = 'wall-edges';
+      rg.add(edges);
+    }
+    for (const win of room.windows || []) {
+      const g = new THREE.PlaneGeometry(win.size[0], win.size[1]);
+      g.applyMatrix4(mat4(win.matrix));
+      const mesh = new THREE.Mesh(g, glassMat);
+      Object.assign(mesh.userData, { kind: 'window', id: win.id, info: { name: 'Window', size: win.size } });
+      h.pickables.push(mesh); rg.add(mesh);
+    }
+    for (const d of room.doors || []) {
+      if (d.isOpen) continue;
+      const g = new THREE.BoxGeometry(Math.max(d.size[0] - 0.04, 0.05), Math.max(d.size[1] - 0.02, 0.05), 0.04);
+      g.applyMatrix4(mat4(d.matrix));
+      const mesh = new THREE.Mesh(g, doorMat);
+      mesh.castShadow = true;
+      Object.assign(mesh.userData, { kind: 'door', id: d.id, info: { name: 'Door (closed)', size: d.size } });
+      h.pickables.push(mesh); rg.add(mesh);
+    }
+    for (const o of room.objects || []) {
+      const [sx, sy, sz] = o.size.map((s) => Math.max(s, 0.02));
+      const g = new RoundedBoxGeometry(sx, sy, sz, 2, Math.min(0.035, sx / 4, sy / 4, sz / 4));
+      g.applyMatrix4(mat4(o.matrix));
+      const mesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: OBJ_COLORS[o.category] ?? 0xa9b2b0, roughness: 0.75, ...clip }));
+      mesh.castShadow = true; mesh.receiveShadow = true;
+      Object.assign(mesh.userData, { kind: 'roomplan-object', id: o.id, category: o.category, info: { name: niceName(o.category), size: o.size } });
+      h.pickables.push(mesh); h.boxes.push(mesh); rg.add(mesh);
+    }
+    Object.assign(rg.userData, { roomIndex: ri, area, color, story: room.story ?? 0 });
+    group.add(rg);
+    h.rooms.push({ group: rg, area, color });
+  });
+
+  scene.add(group);
+  finishHouse(h);
+  return h;
+}
+
+// ---------- photos ----------
+function prepareFrames(list) {
+  return list.filter((f) => f.file && f.transform?.length === 16 && f.intrinsics?.length === 4).map((f) => {
+    const m = new THREE.Matrix4().fromArray(f.transform), e = m.elements;
+    return { file: f.file, w: f.width, h: f.height, fx: f.intrinsics[0], fy: f.intrinsics[1], cx: f.intrinsics[2], cy: f.intrinsics[3],
+      inv: m.clone().invert().elements, pos: new THREE.Vector3(e[12], e[13], e[14]) };
+  });
+}
+function project(f, x, y, z, margin) {
+  const i = f.inv;
+  const X = i[0] * x + i[4] * y + i[8] * z + i[12], Y = i[1] * x + i[5] * y + i[9] * z + i[13], Z = i[2] * x + i[6] * y + i[10] * z + i[14];
+  if (Z > -0.1) return null;
+  const u = f.fx * X / -Z + f.cx, v = f.fy * -Y / -Z + f.cy;
+  if (u < margin || v < margin || u > f.w - 1 - margin || v > f.h - 1 - margin) return null;
+  return [u, v];
+}
+const pixelCache = new Map();
+async function pixels(f) {
+  if (pixelCache.has(f.file)) { const v = pixelCache.get(f.file); pixelCache.delete(f.file); pixelCache.set(f.file, v); return v; }
+  const blob = await (await fetchOk('raw/' + f.file)).blob();
+  const bmp = await createImageBitmap(blob);
+  const c = document.createElement('canvas'); c.width = bmp.width; c.height = bmp.height;
+  const g = c.getContext('2d', { willReadFrequently: true });
+  g.drawImage(bmp, 0, 0); bmp.close?.();
+  const data = g.getImageData(0, 0, c.width, c.height);
+  pixelCache.set(f.file, data);
+  while (pixelCache.size > 48) pixelCache.delete(pixelCache.keys().next().value);
+  return data;
+}
+function sample(img, u, v, out) {
+  const x0 = u | 0, y0 = v | 0, ax = u - x0, ay = v - y0, d = img.data, iw = img.width;
+  const p00 = (y0 * iw + x0) * 4, p10 = p00 + 4, p01 = p00 + iw * 4, p11 = p01 + 4;
+  for (let ch = 0; ch < 3; ch++) out[ch] = (d[p00 + ch] * (1 - ax) + d[p10 + ch] * ax) * (1 - ay) + (d[p01 + ch] * (1 - ax) + d[p11 + ch] * ax) * ay;
+}
+function wallPlanes() {
+  return house.wallSurfaces.map((s) => {
+    const e = s.m.elements;
+    return { s, c: new THREE.Vector3(e[12], e[13], e[14]), ux: new THREE.Vector3(e[0], e[1], e[2]).normalize(),
+      uy: new THREE.Vector3(e[4], e[5], e[6]).normalize(), n: new THREE.Vector3(e[8], e[9], e[10]).normalize() };
+  });
+}
+const _p = new THREE.Vector3();
+function blocked(planes, a, b, skip) {
+  for (const w of planes) {
+    if (w.s === skip) continue;
+    const da = _p.subVectors(a, w.c).dot(w.n), db = _p.subVectors(b, w.c).dot(w.n);
+    if (Math.abs(db) < 0.03 || da * db >= 0) continue;
+    _p.lerpVectors(a, b, da / (da - db)).sub(w.c);
+    const lx = _p.dot(w.ux), ly = _p.dot(w.uy);
+    if (Math.abs(lx) > w.s.W / 2 || Math.abs(ly) > w.s.H / 2) continue;
+    if (w.s.holes.some((hh) => lx > hh[0] && lx < hh[1] && ly > hh[2] && ly < hh[3])) continue;
+    return true;
+  }
+  return false;
+}
+
+// ---------- step 1: textures for walls and floors ----------
+const TEX_PX_PER_M = 100, CELL = 0.4, MAX_PHOTOS_PER_SURFACE = 40;
+
+async function bakeSurfaces(frames, annotations) {
+  const planes = wallPlanes();
+  const surfaces = [];
+  for (const f of frames) if (f.room === undefined) f.room = roomAt(f.pos.x, f.pos.z);
+  for (const p of planes) {
+    const { s, c, ux, uy, n } = p;
+    // A room's wall is seen from inside that room: decide its photo side from photos taken there.
+    const ri = s.group.userData.roomIndex;
+    const own = frames.filter((f) => f.room === ri);
+    let front = 0, back = 0;
+    for (const f of own.length ? own : frames) {
+      if (!project(f, c.x, c.y, c.z, 0) || blocked(planes, f.pos, c, s)) continue;
+      const side = _p.subVectors(f.pos, c).dot(n);
+      if (side > 0.05) front++; else if (side < -0.05) back++;
+    }
+    if (!front && !back) continue;
+    const sign = front >= back ? 1 : -1;
+    surfaces.push({ kind: 'wall', s, sign, id: s.id,
+      O: c.clone().addScaledVector(ux, -s.W / 2).addScaledVector(uy, -s.H / 2),
+      U: ux.clone().multiplyScalar(s.W), V: uy.clone().multiplyScalar(s.H), N: n.clone().multiplyScalar(sign), lenU: s.W, lenV: s.H });
+  }
+  for (const fl of house.floorSurfaces) {
+    const xs = fl.corners.map((c) => c[0]), zs = fl.corners.map((c) => c[2]);
+    const minX = Math.min(...xs), minZ = Math.min(...zs), w = Math.max(...xs) - minX, hgt = Math.max(...zs) - minZ;
+    const y = fl.corners.reduce((a, c) => a + c[1], 0) / fl.corners.length;
+    surfaces.push({ kind: 'floor', fl, minX, minZ, id: `floor-${fl.roomIndex}`,
+      O: new THREE.Vector3(minX, y, minZ), U: new THREE.Vector3(w, 0, 0), V: new THREE.Vector3(0, 0, hgt), N: new THREE.Vector3(0, 1, 0), lenU: w, lenV: hgt });
+  }
+
+  const P = new THREE.Vector3(), toCam = new THREE.Vector3(), rgb = [0, 0, 0];
+  function score(f, N) {
+    toCam.subVectors(f.pos, P);
+    const d = toCam.length();
+    if (d < 0.25 || d > 8) return 0;
+    const cos = toCam.dot(N) / d;
+    if (cos < 0.2) return 0;
+    const uv = project(f, P.x, P.y, P.z, 2);
+    if (!uv) return 0;
+    const ex = Math.min(uv[0], f.w - uv[0]) / (f.w * 0.12), ey = Math.min(uv[1], f.h - uv[1]) / (f.h * 0.12);
+    return (cos * cos / Math.max(d, 0.6)) * Math.min(1, ex) * Math.min(1, ey);
+  }
+
+  for (let si = 0; si < surfaces.length; si++) {
+    const sf = surfaces[si];
+    progress('Texturing walls and floors from photos', si, surfaces.length);
+    const cols = Math.max(1, Math.ceil(sf.lenU / CELL)), rows = Math.max(1, Math.ceil(sf.lenV / CELL));
+    const cellBest = [], totals = new Map();
+    for (let r = 0; r < rows; r++) for (let q = 0; q < cols; q++) {
+      P.copy(sf.O).addScaledVector(sf.U, (q + 0.5) / cols).addScaledVector(sf.V, (r + 0.5) / rows);
+      const list = [];
+      frames.forEach((f, k) => { const sc = score(f, sf.N); if (sc > 0 && !blocked(planes, f.pos, P, sf.s)) list.push([k, sc]); });
+      list.sort((a, b) => b[1] - a[1]);
+      const top = list.slice(0, 3);
+      top.forEach(([k, sc]) => totals.set(k, (totals.get(k) || 0) + sc));
+      cellBest.push(top.map((x) => x[0]));
+    }
+    if (!totals.size) continue;
+    const allowed = new Set([...totals.entries()].sort((a, b) => b[1] - a[1]).slice(0, MAX_PHOTOS_PER_SURFACE).map((x) => x[0]));
+    const cellCands = cellBest.map((_, ci) => {
+      const q = ci % cols, r = Math.floor(ci / cols), set = new Set();
+      for (const [dq, dr] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const qq = q + dq, rr = r + dr;
+        if (qq < 0 || rr < 0 || qq >= cols || rr >= rows) continue;
+        for (const k of cellBest[rr * cols + qq]) if (allowed.has(k)) set.add(k);
+      }
+      return [...set];
+    });
+    const imgs = new Map();
+    for (const k of allowed) { try { imgs.set(k, await pixels(frames[k])); } catch {} }
+
+    const tw = Math.min(2048, Math.max(8, Math.round(sf.lenU * TEX_PX_PER_M)));
+    const th = Math.min(2048, Math.max(8, Math.round(sf.lenV * TEX_PX_PER_M)));
+    const out = new ImageData(tw, th), o = out.data, covered = new Uint8Array(tw * th);
+    let sR = 0, sG = 0, sB = 0, nC = 0;
+    for (let j = 0; j < th; j++) {
+      const t = (j + 0.5) / th, r = Math.min(rows - 1, Math.floor(t * rows));
+      for (let i = 0; i < tw; i++) {
+        const s = (i + 0.5) / tw, q = Math.min(cols - 1, Math.floor(s * cols));
+        P.copy(sf.O).addScaledVector(sf.U, s).addScaledVector(sf.V, t);
+        let R = 0, G = 0, B = 0, Wt = 0;
+        for (const k of cellCands[r * cols + q]) {
+          const img = imgs.get(k);
+          if (!img) continue;
+          let wgt = score(frames[k], sf.N);
+          if (!wgt) continue;
+          wgt = wgt ** 4;
+          const uv = project(frames[k], P.x, P.y, P.z, 1);
+          sample(img, uv[0], uv[1], rgb);
+          R += rgb[0] * wgt; G += rgb[1] * wgt; B += rgb[2] * wgt; Wt += wgt;
+        }
+        const idx = ((th - 1 - j) * tw + i) * 4;
+        if (Wt > 0) { o[idx] = R / Wt; o[idx + 1] = G / Wt; o[idx + 2] = B / Wt; covered[idx >> 2] = 1; sR += o[idx]; sG += o[idx + 1]; sB += o[idx + 2]; nC++; }
+        o[idx + 3] = 255;
+      }
+    }
+    const fill = nC ? [sR / nC, sG / nC, sB / nC] : sf.kind === 'wall' ? [243, 241, 236] : [200, 190, 175];
+    for (let k = 0; k < covered.length; k++) if (!covered[k]) { o[k * 4] = fill[0]; o[k * 4 + 1] = fill[1]; o[k * 4 + 2] = fill[2]; }
+    applySurfaceTexture(sf, out);
+    annotations.surfaces.push({ type: sf.kind, id: sf.id, roomIndex: sf.kind === 'floor' ? sf.fl.roomIndex : sf.s.group.userData.roomIndex,
+      texture: [tw, th], coveredFraction: +(nC / covered.length).toFixed(3), photos: [...allowed].map((k) => frames[k].file) });
+    await nextTick();
+  }
+  progress('Texturing walls and floors from photos', surfaces.length, surfaces.length);
+}
+
+function applySurfaceTexture(sf, imageData) {
+  const c = document.createElement('canvas');
+  c.width = imageData.width; c.height = imageData.height;
+  c.getContext('2d').putImageData(imageData, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  if (sf.kind === 'wall') {
+    // Photo layer on the side of the wall the photos were taken from, unlit (the photo already has real lighting).
+    const { s, sign } = sf;
+    const g = new THREE.ShapeGeometry(s.shape);
+    const pos = g.attributes.position, uv = g.attributes.uv;
+    for (let k = 0; k < pos.count; k++) uv.setXY(k, (pos.getX(k) + s.W / 2) / s.W, (pos.getY(k) + s.H / 2) / s.H);
+    g.translate(0, 0, sign * (WALL_T / 2 + 0.003));
+    g.applyMatrix4(s.m);
+    const mesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, clippingPlanes: [cutPlane] }));
+    mesh.name = `wall-photo-${s.id}`;
+    Object.assign(mesh.userData, { kind: 'wall-photo-layer', decal: true, wallId: s.id });
+    s.group.add(mesh);
+    house.decals.push(mesh);
+  } else {
+    const { fl, minX, minZ, lenU, lenV } = sf;
+    const g = fl.mesh.geometry, pos = g.attributes.position, uv = g.attributes.uv;
+    for (let k = 0; k < pos.count; k++) uv.setXY(k, (pos.getX(k) - minX) / lenU, (pos.getZ(k) - minZ) / lenV);
+    uv.needsUpdate = true;
+    const plain = fl.mesh.material;
+    const photo = new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide });
+    floorMaterials.set(fl.mesh, { photo, plain });
+    fl.mesh.material = photo;
+    house.decals.push(fl.mesh);
+  }
+}
+
+// ---------- step 2: furniture and objects from the LiDAR mesh ----------
+function parsePly(buffer) {
+  const bytes = new Uint8Array(buffer);
+  const marker = 'end_header\n';
+  let end = -1;
+  for (let i = 0; i < Math.min(bytes.length, 4096); i++) {
+    let ok = true;
+    for (let k = 0; k < marker.length; k++) if (bytes[i + k] !== marker.charCodeAt(k)) { ok = false; break; }
+    if (ok) { end = i + marker.length; break; }
+  }
+  if (end < 0) throw new Error('PLY header not found');
+  const lines = new TextDecoder().decode(bytes.subarray(0, end)).split('\n').map((l) => l.trim());
+  if (!lines.includes('format binary_little_endian 1.0')) throw new Error('PLY must be binary little-endian');
+  let nv = 0, nf = 0, current = null, vprops = [], fprops = [];
+  for (const l of lines) {
+    const p = l.split(/\s+/);
+    if (p[0] === 'element') { current = p[1]; if (p[1] === 'vertex') nv = +p[2]; if (p[1] === 'face') nf = +p[2]; }
+    else if (p[0] === 'property') (current === 'vertex' ? vprops : fprops).push(p.slice(1).join(' '));
+  }
+  if (vprops.join('|') !== 'float x|float y|float z') throw new Error('unexpected PLY vertex layout: ' + vprops.join(', '));
+  if (fprops[0] !== 'list uchar uint vertex_indices') throw new Error('unexpected PLY face layout');
+  const hasClass = fprops[1] === 'uchar classification';
+  const dv = new DataView(buffer, end);
+  const positions = new Float32Array(nv * 3);
+  let o = 0;
+  for (let i = 0; i < nv * 3; i++, o += 4) positions[i] = dv.getFloat32(o, true);
+  const index = new Uint32Array(nf * 3), cls = new Uint8Array(nf);
+  for (let i = 0; i < nf; i++) {
+    const n = dv.getUint8(o); o += 1;
+    if (n !== 3) throw new Error('PLY faces must be triangles');
+    index[i * 3] = dv.getUint32(o, true); index[i * 3 + 1] = dv.getUint32(o + 4, true); index[i * 3 + 2] = dv.getUint32(o + 8, true); o += 12;
+    if (hasClass) { cls[i] = dv.getUint8(o); o += 1; }
+  }
+  return { positions, index, cls };
+}
+
+async function processMeshes(files, frames, annotations) {
+  progress('Reading the LiDAR mesh');
+  const parts = [];
+  for (const file of files) parts.push(parsePly(await (await fetchOk('raw/' + file)).arrayBuffer()));
+  const nvTotal = parts.reduce((s, p) => s + p.positions.length / 3, 0);
+  const nfTotal = parts.reduce((s, p) => s + p.cls.length, 0);
+  const stats = { files, inputVertices: nvTotal, inputFaces: nfTotal, keptFaces: 0, keptVertices: 0,
+    removed: { wallFloorCeilingWindowDoor: 0, nearRoomPlanWall: 0, nearFloorOrCeiling: 0, outsideHouse: 0 }, keptByClassification: {} };
+
+  // Which faces are furniture and objects: not architecture, not hugging a RoomPlan wall or the floor.
+  progress('Separating furniture from walls and floors');
+  const planes = wallPlanes();
+  const ceiling = Math.max(...house.wallSurfaces.map((s) => s.m.elements[13] + s.H / 2), house.floorY + 2.2);
+  const box = new THREE.Box3().setFromObject(house.group).expandByScalar(0.25);
+  const keptPos = [], keptIdx = [];
+  const c = new THREE.Vector3(), rel = new THREE.Vector3();
+  for (const part of parts) {
+    const { positions: P, index: I, cls } = part;
+    const remap = new Int32Array(P.length / 3).fill(-1);
+    for (let f = 0; f < cls.length; f++) {
+      const k = cls[f];
+      if (k === 1 || k === 2 || k === 3 || k === 6 || k === 7) { stats.removed.wallFloorCeilingWindowDoor++; continue; }
+      const a = I[f * 3] * 3, b = I[f * 3 + 1] * 3, d = I[f * 3 + 2] * 3;
+      c.set((P[a] + P[b] + P[d]) / 3, (P[a + 1] + P[b + 1] + P[d + 1]) / 3, (P[a + 2] + P[b + 2] + P[d + 2]) / 3);
+      if (!box.containsPoint(c)) { stats.removed.outsideHouse++; continue; }
+      if (c.y < house.floorY + 0.035 || c.y > ceiling - 0.06) { stats.removed.nearFloorOrCeiling++; continue; }
+      let nearWall = false;
+      for (const w of planes) {
+        rel.subVectors(c, w.c);
+        if (Math.abs(rel.dot(w.n)) < 0.07 && Math.abs(rel.dot(w.ux)) < w.s.W / 2 + 0.05 && Math.abs(rel.dot(w.uy)) < w.s.H / 2 + 0.05) { nearWall = true; break; }
+      }
+      if (nearWall) { stats.removed.nearRoomPlanWall++; continue; }
+      for (const vi of [I[f * 3], I[f * 3 + 1], I[f * 3 + 2]]) {
+        if (remap[vi] < 0) { remap[vi] = keptPos.length / 3; keptPos.push(P[vi * 3], P[vi * 3 + 1], P[vi * 3 + 2]); }
+        keptIdx.push(remap[vi]);
+      }
+      const name = MESH_CLASSES[k] || String(k);
+      stats.keptByClassification[name] = (stats.keptByClassification[name] || 0) + 1;
+    }
+  }
+  stats.keptFaces = keptIdx.length / 3;
+  stats.keptVertices = keptPos.length / 3;
+  annotations.mesh = stats;
+  if (!stats.keptFaces) return;
+
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute('position', new THREE.Float32BufferAttribute(keptPos, 3));
+  geom.setIndex(keptPos.length / 3 > 65535 ? new THREE.Uint32BufferAttribute(keptIdx, 1) : new THREE.Uint16BufferAttribute(keptIdx, 1));
+  geom.computeVertexNormals();
+  const pos = geom.attributes.position.array, nor = geom.attributes.normal.array, nv = pos.length / 3;
+
+  // Mesh winding can face either way: point the normals towards the cameras that see the surface.
+  let toward = 0, away = 0;
+  const tc = new THREE.Vector3();
+  for (let s = 0; s < Math.min(nv, 3000); s++) {
+    const i = Math.floor(Math.random() * nv) * 3;
+    for (const f of frames) {
+      if (!project(f, pos[i], pos[i + 1], pos[i + 2], 0)) continue;
+      tc.set(f.pos.x - pos[i], f.pos.y - pos[i + 1], f.pos.z - pos[i + 2]);
+      const dot = tc.x * nor[i] + tc.y * nor[i + 1] + tc.z * nor[i + 2];
+      if (dot > 0) toward++; else away++;
+    }
+  }
+  const flip = away > toward;
+  if (flip) for (let i = 0; i < nor.length; i++) nor[i] = -nor[i];
+  stats.normalsFlipped = flip;
+
+  // Colour every vertex from the photos that face it, one photo at a time (keeps memory low).
+  const VOX = 0.5, buckets = new Map();
+  for (let v = 0; v < nv; v++) {
+    const key = `${Math.floor(pos[v * 3] / VOX)},${Math.floor(pos[v * 3 + 1] / VOX)},${Math.floor(pos[v * 3 + 2] / VOX)}`;
+    let b = buckets.get(key);
+    if (!b) buckets.set(key, (b = []));
+    b.push(v);
+  }
+  const perFrame = new Map();
+  const center = new THREE.Vector3();
+  for (const [key, verts] of buckets) {
+    const [ix, iy, iz] = key.split(',').map(Number);
+    center.set((ix + 0.5) * VOX, (iy + 0.5) * VOX, (iz + 0.5) * VOX);
+    const list = [];
+    frames.forEach((f, k) => {
+      const d = center.distanceTo(f.pos);
+      if (d < 0.2 || d > 7) return;
+      if (!project(f, center.x, center.y, center.z, -0.15 * f.w)) return;
+      if (blocked(planes, f.pos, center, null)) return;
+      list.push([k, 1 / Math.max(d, 0.5)]);
+    });
+    list.sort((a, b) => b[1] - a[1]);
+    for (const [k] of list.slice(0, 8)) { let arr = perFrame.get(k); if (!arr) perFrame.set(k, (arr = [])); arr.push(verts); }
+  }
+  const acc = new Float32Array(nv * 4), rgb = [0, 0, 0];
+  let done = 0;
+  for (const [k, groups] of perFrame) {
+    progress('Colouring furniture from photos', done++, perFrame.size);
+    const f = frames[k];
+    let img;
+    try { img = await pixels(f); } catch { continue; }
+    for (const verts of groups) for (const v of verts) {
+      const x = pos[v * 3], y = pos[v * 3 + 1], z = pos[v * 3 + 2];
+      tc.set(f.pos.x - x, f.pos.y - y, f.pos.z - z);
+      const d = tc.length();
+      const cos = (tc.x * nor[v * 3] + tc.y * nor[v * 3 + 1] + tc.z * nor[v * 3 + 2]) / d;
+      if (cos < 0.15) continue;
+      const uv = project(f, x, y, z, 1);
+      if (!uv) continue;
+      const ex = Math.min(uv[0], f.w - uv[0]) / (f.w * 0.12), ey = Math.min(uv[1], f.h - uv[1]) / (f.h * 0.12);
+      const wgt = ((cos * cos / Math.max(d, 0.5)) * Math.min(1, ex) * Math.min(1, ey)) ** 4;
+      sample(img, uv[0], uv[1], rgb);
+      acc[v * 4] += rgb[0] * wgt; acc[v * 4 + 1] += rgb[1] * wgt; acc[v * 4 + 2] += rgb[2] * wgt; acc[v * 4 + 3] += wgt;
+    }
+    if (done % 8 === 0) await nextTick();
+  }
+  const colors = new Float32Array(nv * 3);
+  const toLinear = (c) => { c /= 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+  let colored = 0;
+  for (let v = 0; v < nv; v++) {
+    const w = acc[v * 4 + 3];
+    if (w > 0) { colors[v * 3] = toLinear(acc[v * 4] / w); colors[v * 3 + 1] = toLinear(acc[v * 4 + 1] / w); colors[v * 3 + 2] = toLinear(acc[v * 4 + 2] / w); colored++; }
+    else colors[v * 3] = colors[v * 3 + 1] = colors[v * 3 + 2] = 0.3;
+  }
+  geom.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  stats.coloredVertices = colored;
+
+  const mesh = new THREE.Mesh(geom, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide, clippingPlanes: [cutPlane] }));
+  mesh.name = 'scanned-furniture';
+  mesh.userData.kind = 'arkit-mesh';
+  house.group.add(mesh);
+  house.scanMesh = mesh;
+  for (const b of house.boxes) b.visible = false;
+}
+
+// ---------- annotations ----------
+function roomAt(x, z) {
+  for (const fl of house.floorSurfaces) {
+    const pts = fl.corners;
+    let inside = false;
+    for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+      const xi = pts[i][0], zi = pts[i][2], xj = pts[j][0], zj = pts[j][2];
+      if ((zi > z) !== (zj > z) && x < (xj - xi) * (z - zi) / (zj - zi) + xi) inside = !inside;
+    }
+    if (inside) return fl.roomIndex;
+  }
+  return null;
+}
+
+// ---------- process mode ----------
+async function runProcess() {
+  progress('Reading the scan');
+  const manifest = await fetchOk('raw/manifest.json').then((r) => r.json()).catch(() => null);
+  const data = await (await fetchOk('raw/house-scene.json')).json();
+  const keyframes = await fetchOk('raw/keyframes.json').then((r) => r.json()).catch(() => null);
+  house = build(data);
+  const frames = prepareFrames(keyframes?.frames || []);
+  const annotations = {
+    format: 'house-scanner-annotations', version: 1, generatedAt: new Date().toISOString(),
+    notes: [
+      'Made by the House Renderer from the uploaded package. Same coordinate system as the package (metres, Y up).',
+      'model.glb contains: one node per room (room-N) with walls, photo layers on walls (wall-photo-*), floors, windows, closed doors and RoomPlan furniture boxes; plus scanned-furniture, the LiDAR mesh of furniture and objects coloured from the photos.',
+      'Photo-textured surfaces and the scanned furniture are unlit (KHR_materials_unlit): their colours are the real, photographed lighting.',
+      'Every node has extras (userData) with kind, ids from house-scene.json and roomIndex where relevant.',
+    ],
+    package: manifest ? { name: manifest.name, sessions: manifest.sessions, device: manifest.device, counts: manifest.counts } : null,
+    rooms: house.rooms.map((r, i) => ({ index: i, areaM2: +r.area.toFixed(2), keyframes: [] })),
+    keyframes: [], surfaces: [], mesh: null,
+  };
+  for (const f of frames) {
+    const room = roomAt(f.pos.x, f.pos.z);
+    annotations.keyframes.push({ file: f.file, roomIndex: room, position: [f.pos.x, f.pos.y, f.pos.z].map((v) => +v.toFixed(3)) });
+    if (room != null) annotations.rooms[room].keyframes.push(f.file);
+  }
+
+  if (frames.length) await bakeSurfaces(frames, annotations);
+  const meshFiles = manifest?.files?.meshes?.length ? manifest.files.meshes : [];
+  if (meshFiles.length) await processMeshes(meshFiles, frames, annotations);
+
+  progress('Saving the 3D model');
+  const glb = await new GLTFExporter().parseAsync(house.group, { binary: true, onlyVisible: false, maxTextureSize: 4096 });
+  let r = await fetch(api('result', '&part=model'), { method: 'POST', body: glb });
+  if (!r.ok) throw new Error('saving model failed: ' + r.status);
+  r = await fetch(api('result', '&part=annotations'), { method: 'POST', body: JSON.stringify(annotations, null, 1) });
+  if (!r.ok) throw new Error('saving annotations failed: ' + r.status);
+  window.reportDone?.();
+}
+
+// ---------- stream mode ----------
+async function runStream() {
+  const [glb, data] = await Promise.all([
+    fetchOk('model.glb').then((r) => r.arrayBuffer()),
+    fetchOk('raw/house-scene.json').then((r) => r.json()),
+  ]);
+  const gltf = await new GLTFLoader().parseAsync(glb, '');
+  const root = gltf.scene;
+  scene.add(root);
+  const h = { group: root, data, rooms: [], pickables: [], floors: [], decals: [], boxes: [], scanMesh: null };
+  root.traverse((o) => {
+    const u = o.userData || {};
+    if (!o.isMesh && !o.isLineSegments && u.roomIndex !== undefined) h.rooms[u.roomIndex] = { group: o, area: u.area || 0, color: u.color ?? 0xcccccc };
+    if (!o.isMesh && !o.isLineSegments) return;
+    if (u.floor) {
+      h.floors.push(o);
+      o.receiveShadow = true;
+      if (o.material.map) {
+        floorMaterials.set(o, { photo: o.material, plain: new THREE.MeshStandardMaterial({ color: u.plainColor ?? 0xd9bf98, roughness: 0.85, side: THREE.DoubleSide }) });
+        h.decals.push(o);
+      }
+      return;
+    }
+    [].concat(o.material).forEach((m) => { m.clippingPlanes = [cutPlane]; });
+    if (u.kind === 'wall' || u.kind === 'roomplan-object' || u.kind === 'door') { o.castShadow = true; o.receiveShadow = true; }
+    if (u.info) h.pickables.push(o);
+    if (u.decal) h.decals.push(o);
+    if (u.kind === 'roomplan-object') h.boxes.push(o);
+    if (u.kind === 'arkit-mesh') h.scanMesh = o;
+  });
+  h.rooms = h.rooms.filter(Boolean);
+  house = h;
+  finishHouse(h);
+  setupUI();
+  window.reportReady?.();
+}
+
+// ---------- UI (stream mode) ----------
+let view = 'orbit', tween = null;
+function setupUI() {
+  const d = house.data;
+  $('name').textContent = d.name || 'House scan';
+  const all = (k) => d.rooms.reduce((n, r) => n + (r[k]?.length || 0), 0);
+  const area = house.rooms.reduce((s, r) => s + r.area, 0);
+  const hs = d.rooms.flatMap((r) => (r.walls || []).map((w) => w.size[1])).sort((a, b) => a - b);
+  const ceiling = hs.length ? hs[Math.floor(hs.length / 2)] : 0;
+  $('sub').textContent = `${d.rooms.length} room${d.rooms.length === 1 ? '' : 's'} · rendered in the cloud`;
+  $('stats').replaceChildren(...[
+    [area ? area.toFixed(1) + ' m²' : '—', 'Floor area'], [ceiling ? ceiling.toFixed(2) + ' m' : '—', 'Ceiling'],
+    [String(all('doors') + all('openings')), 'Doors'], [String(all('windows')), 'Windows'], [String(all('objects')), 'Furniture'],
+  ].map(([v, k]) => { const el = document.createElement('div'); el.className = 'stat'; el.innerHTML = '<div class="v"></div><div class="k"></div>'; el.firstChild.textContent = v; el.lastChild.textContent = k; return el; }));
+  $('rooms').replaceChildren(...house.rooms.map((r, i) => {
+    const b = document.createElement('button');
+    b.className = 'chip'; b.setAttribute('aria-pressed', 'true');
+    b.innerHTML = '<span class="sw"></span><span></span><span class="a"></span>';
+    b.children[0].style.background = '#' + r.color.toString(16).padStart(6, '0');
+    b.children[1].textContent = 'Room ' + (i + 1);
+    b.children[2].textContent = r.area ? r.area.toFixed(1) + ' m²' : '';
+    b.addEventListener('click', () => { r.group.visible = !r.group.visible; b.setAttribute('aria-pressed', String(r.group.visible)); invalidate(); });
+    return b;
+  }));
+  $('tex-wrap').hidden = !house.decals.length;
+  $('furn').hidden = !house.scanMesh;
+  $('v-orbit').onclick = () => setView('orbit');
+  $('v-top').onclick = () => setView('top');
+  $('v-walk').onclick = () => setView('walk');
+  $('reset').onclick = () => setView(view);
+  $('cut').onchange = updateCut;
+  $('tex').onchange = (e) => showTextures(e.target.checked);
+  $('f-scan').onclick = () => setFurniture('scan');
+  $('f-boxes').onclick = () => setFurniture('boxes');
+  $('grab').onclick = () => { $('sheet').classList.toggle('collapsed'); invalidate(); };
+  applyTheme();
+  setView('orbit');
+}
+function showTextures(on) {
+  for (const d of house.decals) {
+    const fm = floorMaterials.get(d);
+    if (fm) d.material = on ? fm.photo : fm.plain; else d.visible = on;
+  }
+  invalidate();
+}
+function setFurniture(mode) {
+  if (house.scanMesh) house.scanMesh.visible = mode === 'scan';
+  for (const b of house.boxes) b.visible = mode === 'boxes' || !house.scanMesh;
+  $('f-scan').setAttribute('aria-pressed', String(mode === 'scan'));
+  $('f-boxes').setAttribute('aria-pressed', String(mode === 'boxes'));
+  invalidate();
+}
+function frameDistance() {
+  const radius = 0.5 * Math.hypot(house.size.x, house.size.z, house.size.y);
+  const fit = radius / Math.sin(THREE.MathUtils.degToRad(camera.fov) / 2);
+  return camera.aspect < 1 ? fit / Math.max(camera.aspect, 0.45) * 0.8 : fit * 1.05;
+}
+function setView(v) {
+  view = v; tween = null;
+  for (const id of ['orbit', 'top', 'walk']) $('v-' + id).setAttribute('aria-pressed', String(id === v));
+  const c = house.center, dist = frameDistance();
+  Object.assign(controls, { enableZoom: true, enablePan: true, rotateSpeed: 1, minPolarAngle: 0, maxPolarAngle: Math.PI / 2 - 0.05, minDistance: 0.5, maxDistance: 200 });
+  if (v === 'orbit') {
+    camera.position.copy(c).addScaledVector(new THREE.Vector3(0.55, 0.75, 0.9).normalize(), dist);
+    controls.target.set(c.x, house.floorY + 0.6, c.z);
+    $('hint').textContent = 'Drag to rotate · pinch to zoom · two fingers to pan · tap furniture for its size';
+  } else if (v === 'top') {
+    camera.position.set(c.x, house.floorY + dist * 1.05, c.z + 0.001);
+    controls.target.set(c.x, house.floorY, c.z);
+    $('hint').textContent = 'Seen from above, 1 m grid · pinch to zoom · two fingers to pan';
+  } else {
+    const room = house.rooms.find((r) => r.group.visible) || house.rooms[0];
+    // Stand near one end of the room and look across it, along its longer side.
+    const bb = new THREE.Box3().setFromObject(room.group), rc = bb.getCenter(new THREE.Vector3()), rs = bb.getSize(new THREE.Vector3());
+    const alongX = rs.x > rs.z;
+    const start = alongX ? new THREE.Vector3(bb.min.x + rs.x * 0.15, 0, rc.z) : new THREE.Vector3(rc.x, 0, bb.max.z - rs.z * 0.15);
+    camera.position.set(start.x, house.floorY + EYE, start.z);
+    controls.target.set(start.x + (alongX ? 0.01 : 0), house.floorY + EYE - 0.002, start.z - (alongX ? 0 : 0.01));
+    Object.assign(controls, { enableZoom: false, enablePan: false, rotateSpeed: -0.35, minDistance: 0, minPolarAngle: 0.35, maxPolarAngle: Math.PI - 0.35 });
+    $('hint').textContent = 'Drag to look around · tap the floor to walk there';
+  }
+  updateCut();
+  controls.update();
+  invalidate();
+}
+function updateCut() {
+  renderer.localClippingEnabled = $('cut').checked && view !== 'walk';
+  $('cut').disabled = view === 'walk';
+  invalidate();
+}
+
+// Tap: object size, or walk to the tapped floor spot.
+const ray = new THREE.Raycaster();
+let down = null;
+canvas.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY, t: performance.now() }; });
+canvas.addEventListener('pointerup', (e) => {
+  if (!down || !house || MODE !== 'stream') return;
+  const tap = Math.hypot(e.clientX - down.x, e.clientY - down.y) < 8 && performance.now() - down.t < 400;
+  down = null;
+  if (!tap) return;
+  ray.setFromCamera(new THREE.Vector2((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1), camera);
+  const visible = (o) => { for (let p = o; p; p = p.parent) if (!p.visible) return false; return true; };
+  const hit = ray.intersectObjects([...house.pickables, ...house.floors], false).filter((h) => visible(h.object))[0];
+  if (hit?.object.userData.info) {
+    const { name, size } = hit.object.userData.info;
+    $('info').innerHTML = '<b></b><span class="dims"></span>';
+    $('info').firstChild.textContent = name;
+    $('info').lastChild.textContent = size.map((s) => Math.round(s * 100)).filter((s) => s > 0).join(' × ') + ' cm';
+    $('info').hidden = false;
+    return;
+  }
+  $('info').hidden = true;
+  if (view === 'walk' && hit?.object.userData.floor) {
+    tween = { from: camera.position.clone(), to: new THREE.Vector3(hit.point.x, house.floorY + EYE, hit.point.z),
+      look: controls.target.clone().sub(camera.position), t0: performance.now(), ms: 650 };
+  }
+});
+
+function tick(now) {
+  if (tween) {
+    const k = Math.min(1, (now - tween.t0) / tween.ms), e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+    camera.position.lerpVectors(tween.from, tween.to, e);
+    controls.target.copy(camera.position).add(tween.look);
+    if (k >= 1) tween = null;
+    dirty = true;
+  }
+  if (controls.update()) dirty = true;
+  if (dirty) { renderer.render(scene, camera); dirty = false; }
+  requestAnimationFrame(tick);
+}
+
+if (MODE === 'process') {
+  runProcess().catch((e) => window.reportError?.(e.message || String(e)));
+} else {
+  runStream().then(() => requestAnimationFrame(tick)).catch((e) => window.reportError?.(e.message || String(e)));
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+{
+  "name": "house-renderer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Processes House Scanner packages and streams a live 3D rendering to thin clients.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "jszip": "3.10.1",
+    "playwright": "1.63.0",
+    "three": "0.160.0",
+    "ws": "8.18.0"
+  }
+}

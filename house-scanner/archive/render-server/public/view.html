@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>House Renderer</title>
+<style>
+  :root {
+    --bg: #e6eae8; --fg: #172423; --muted: #5b6d6b; --accent: #2f6f73; --surface: rgba(250, 252, 251, 0.94); --line: rgba(32, 52, 52, 0.14);
+    --danger: #b3412f;
+    font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #131a1a; --fg: #e4eeec; --muted: #98aba8; --accent: #7cc4c2; --surface: rgba(26, 34, 34, 0.94); --line: rgba(200, 225, 222, 0.14); --danger: #f08a76; color-scheme: dark; }
+  }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); overflow: hidden; overscroll-behavior: none; }
+  #screen { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; display: block; }
+  .probe { position: fixed; visibility: hidden; padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px); }
+  .panel {
+    position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    width: min(340px, calc(100% - 32px)); box-sizing: border-box;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 20px;
+    display: grid; gap: 10px; text-align: center;
+  }
+  .panel h1 { margin: 0; font: 600 17px/1.3 "Space Grotesk", system-ui, sans-serif; }
+  .panel p { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.45; }
+  .track { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+  .fill { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+  .error { color: var(--danger); }
+  .menu {
+    position: fixed; z-index: 3;
+    top: calc(env(safe-area-inset-top, 0px) + 12px); right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  .menu summary {
+    list-style: none; cursor: pointer; font: 600 14px/1 system-ui, sans-serif;
+    background: var(--accent); color: #fff; border-radius: 12px; padding: 12px 14px;
+  }
+  .menu summary::-webkit-details-marker { display: none; }
+  .menu div { position: absolute; right: 0; top: calc(100% + 6px); background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 6px; display: grid; min-width: 220px; }
+  .menu a { color: var(--fg); text-decoration: none; padding: 10px 12px; border-radius: 8px; font-size: 14px; }
+  .menu a:hover, .menu a:focus-visible { background: var(--line); }
+  .menu small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+</style>
+</head>
+<body>
+<canvas id="screen"></canvas>
+<div class="probe" id="probe"></div>
+
+<section class="panel" id="panel">
+  <h1 id="title">Opening scan…</h1>
+  <div class="track" id="track" hidden><div class="fill" id="fill"></div></div>
+  <p id="detail">Connecting to the render server.</p>
+</section>
+
+<details class="menu" id="menu" hidden>
+  <summary>Download</summary>
+  <div>
+    <a id="dl-model" href="#">3D model<small>GLB · textured, opens in Blender, three.js, Quick Look</small></a>
+    <a id="dl-notes" href="#">Annotations<small>JSON · rooms, photos per surface, mesh stats</small></a>
+  </div>
+</details>
+
+<script>
+(() => {
+  const id = location.pathname.split('/').filter(Boolean)[1];
+  const hash = new URLSearchParams(location.hash.slice(1));
+  const token = hash.get('token') || '';
+  const auth = token ? { Authorization: 'Bearer ' + token } : {};
+  const q = token ? '?token=' + encodeURIComponent(token) : '';
+  const $ = (x) => document.getElementById(x);
+  const canvas = $('screen');
+  const ctx = canvas.getContext('2d');
+
+  $('dl-model').href = `/api/scans/${id}/model.glb${q}`;
+  $('dl-notes').href = `/api/scans/${id}/annotations.json${q}`;
+
+  function panel(title, detail, progress, isError) {
+    $('panel').hidden = !title;
+    $('title').textContent = title || '';
+    $('detail').textContent = detail || '';
+    $('detail').classList.toggle('error', !!isError);
+    $('track').hidden = progress == null;
+    if (progress != null) $('fill').style.width = Math.round(progress * 100) + '%';
+  }
+
+  // 1. Wait until the server has processed the scan.
+  async function waitUntilReady() {
+    for (;;) {
+      let s;
+      try {
+        const r = await fetch(`/api/scans/${id}`, { headers: auth });
+        if (r.status === 401) { panel('Access denied', 'The access token is missing or wrong. Check it in the app\'s Settings.', null, true); return false; }
+        if (!r.ok) { panel('Scan not found', 'The server has no scan with this link.', null, true); return false; }
+        s = await r.json();
+      } catch {
+        panel('Can\'t reach the server', 'Retrying…');
+        await new Promise((r) => setTimeout(r, 3000));
+        continue;
+      }
+      if (s.state === 'ready') return true;
+      if (s.state === 'failed') { panel('Processing failed', s.error || 'Unknown error.', null, true); return false; }
+      const p = s.total ? s.done / s.total : null;
+      panel('Preparing your 3D model', s.state === 'queued' ? 'Waiting for the server…' : `${s.stage || 'Working'}${s.total ? ` · ${s.done} of ${s.total}` : ''}`, p ?? 0);
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+  }
+
+  // 2. Stream: frames in, input out.
+  let ws;
+  let pending = null, drawing = false;
+  function size() {
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(innerWidth * dpr);
+    canvas.height = Math.round(innerHeight * dpr);
+  }
+  function insets() {
+    const cs = getComputedStyle($('probe'));
+    return { top: parseFloat(cs.paddingTop) || 0, right: parseFloat(cs.paddingRight) || 0, bottom: parseFloat(cs.paddingBottom) || 0, left: parseFloat(cs.paddingLeft) || 0 };
+  }
+  const dark = matchMedia('(prefers-color-scheme: dark)');
+  const sendMsg = (m) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(m)); };
+
+  async function draw() {
+    if (drawing || !pending) return;
+    drawing = true;
+    const blob = pending; pending = null;
+    try {
+      const img = await createImageBitmap(blob);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      img.close && img.close();
+    } catch {}
+    drawing = false;
+    if (pending) requestAnimationFrame(draw);
+  }
+
+  function connect() {
+    size();
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const params = new URLSearchParams({ w: innerWidth, h: innerHeight, dpr: Math.min(window.devicePixelRatio || 1, 2), dark: dark.matches ? '1' : '0' });
+    if (token) params.set('token', token);
+    ws = new WebSocket(`${proto}://${location.host}/api/scans/${id}/stream?${params}`);
+    ws.binaryType = 'blob';
+    panel('Starting the renderer', 'Loading the model on the server…');
+    ws.onopen = () => sendMsg({ t: 'insets', ...insets() });
+    ws.onmessage = (e) => {
+      if (typeof e.data === 'string') {
+        const m = JSON.parse(e.data);
+        if (m.t === 'ready') { panel(null); $('menu').hidden = false; }
+        if (m.t === 'error') panel('Something went wrong', m.message, null, true);
+        return;
+      }
+      pending = e.data;            // keep only the newest frame
+      requestAnimationFrame(draw);
+    };
+    ws.onclose = () => {
+      $('menu').hidden = true;
+      panel('Disconnected', 'Tap to reconnect.', null);
+      $('panel').onclick = () => { $('panel').onclick = null; connect(); };
+    };
+  }
+
+  // Input: touches as touch events (pinch works), mouse as mouse events.
+  const fingers = new Map();
+  let moveQueued = false;
+  const point = (e) => ({ x: e.clientX, y: e.clientY });
+  function sendTouches() { sendMsg({ t: 'touch', points: [...fingers.entries()].map(([id, p]) => ({ id, x: p.x, y: p.y })) }); }
+  const mouseButton = (e) => ['left', 'middle', 'right'][e.button] || 'none';
+
+  canvas.addEventListener('pointerdown', (e) => {
+    canvas.setPointerCapture(e.pointerId);
+    if (e.pointerType === 'touch') { fingers.set(e.pointerId, point(e)); sendTouches(); }
+    else sendMsg({ t: 'mouse', type: 'mousePressed', ...point(e), button: mouseButton(e), buttons: e.buttons });
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    if (e.pointerType === 'touch') {
+      if (!fingers.has(e.pointerId)) return;
+      fingers.set(e.pointerId, point(e));
+      if (!moveQueued) { moveQueued = true; requestAnimationFrame(() => { moveQueued = false; sendTouches(); }); }
+    } else {
+      sendMsg({ t: 'mouse', type: 'mouseMoved', ...point(e), button: e.buttons ? 'left' : 'none', buttons: e.buttons });
+    }
+  });
+  const end = (e) => {
+    if (e.pointerType === 'touch') { fingers.delete(e.pointerId); sendTouches(); }
+    else sendMsg({ t: 'mouse', type: 'mouseReleased', ...point(e), button: mouseButton(e), buttons: e.buttons });
+  };
+  canvas.addEventListener('pointerup', end);
+  canvas.addEventListener('pointercancel', end);
+  canvas.addEventListener('wheel', (e) => { e.preventDefault(); sendMsg({ t: 'wheel', ...point(e), dx: e.deltaX, dy: e.deltaY }); }, { passive: false });
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  let resizeTimer;
+  addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => { size(); sendMsg({ t: 'resize', width: innerWidth, height: innerHeight }); sendMsg({ t: 'insets', ...insets() }); }, 150);
+  });
+  dark.addEventListener('change', () => sendMsg({ t: 'theme', dark: dark.matches }));
+
+  if (!id) { panel('No scan', 'This link has no scan in it.', null, true); return; }
+  waitUntilReady().then((ok) => ok && connect());
+})();
+</script>
+</body>
+</html>
