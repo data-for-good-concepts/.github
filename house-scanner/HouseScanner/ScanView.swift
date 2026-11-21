@@ -42,6 +42,11 @@ struct ScanView: View {
                         .padding(.vertical, 8)
                         .background(.ultraThinMaterial, in: Capsule())
                 }
+                if controller.phase == .scanning, !controller.lidarStatus.isEmpty {
+                    Text(controller.lidarStatus)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.white.opacity(0.7))
+                }
                 Spacer()
                 if controller.phase == .scanning, controller.capturedArea == 0 {
                     emptyCanvasHint

@@ -39,6 +39,8 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureSessionDelega
     @Published var capturedArea: Float = 0
     /// RoomPlan's advice, such as "Move closer to the wall", or nil when all is well.
     @Published var instruction: String?
+    /// Whether RoomPlan's session delivers LiDAR depth per frame and a mesh (shown while testing).
+    @Published var lidarStatus = ""
 
     let canvas = CoverageCanvas()
     let coverage = CoverageMap()
@@ -95,26 +97,47 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureSessionDelega
         captureSession.run(configuration: RoomCaptureSession.Configuration())
         phase = .scanning
         startRecordingIfNeeded()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.ensureLiDARCapture() }
     }
 
-    /// RoomPlan runs the AR session with its own settings. If those don't include ARKit's LiDAR
-    /// mesh and per-frame depth, switch them on without resetting tracking, so RoomPlan carries on.
-    private func ensureLiDARCapture() {
-        guard phase == .scanning,
-              let configuration = arSession.configuration as? ARWorldTrackingConfiguration else { return }
-        var changed = false
-        if configuration.sceneReconstruction.isEmpty,
-           ARWorldTrackingConfiguration.supportsSceneReconstruction(.meshWithClassification) {
-            configuration.sceneReconstruction = .meshWithClassification
-            changed = true
+    /// What RoomPlan's own session provides. The app must not change RoomPlan's session settings:
+    /// re-running it with extra options makes RoomPlan stop with "World tracking failure".
+    private func updateLiDARStatus(_ frame: ARFrame) {
+        let configuration = arSession.configuration as? ARWorldTrackingConfiguration
+        let depth = frame.sceneDepth != nil || frame.smoothedSceneDepth != nil
+        let mesh = !(configuration?.sceneReconstruction.isEmpty ?? true) || frame.anchors.contains { $0 is ARMeshAnchor }
+        let status = "LiDAR depth: \(depth ? "on" : "off") · Mesh: \(mesh ? "on" : "off")"
+        if status != lidarStatus { lidarStatus = status }
+    }
+
+    /// A 256×192 depth map made by projecting the LiDAR mesh's vertices into the camera
+    /// (nearest vertex wins). Used for the black canvas when RoomPlan's session gives no depth.
+    private func depthFromMesh(_ frame: ARFrame) -> FrameRecorder.Plane? {
+        let anchors = frame.anchors.compactMap { $0 as? ARMeshAnchor }
+        guard !anchors.isEmpty else { return nil }
+        let width = 256, height = 192
+        let scale = Float(width) / Float(frame.camera.imageResolution.width)
+        let k = frame.camera.intrinsics
+        let fx = k.columns.0.x * scale, fy = k.columns.1.y * scale
+        let cx = k.columns.2.x * scale, cy = k.columns.2.y * scale
+        let worldToCamera = frame.camera.transform.inverse
+        var depth = [Float32](repeating: 0, count: width * height)
+        for anchor in anchors {
+            let toCamera = worldToCamera * anchor.transform
+            let vertices = anchor.geometry.vertices
+            let base = vertices.buffer.contents().advanced(by: vertices.offset)
+            for i in 0..<vertices.count {
+                let p = base.advanced(by: i * vertices.stride).assumingMemoryBound(to: Float.self)
+                let c = toCamera * simd_float4(p[0], p[1], p[2], 1)
+                let d = -c.z
+                guard d > 0.1 else { continue }
+                let u = Int(fx * c.x / d + cx), v = Int(fy * -c.y / d + cy)
+                guard u >= 0, u < width, v >= 0, v < height else { continue }
+                let index = v * width + u
+                if depth[index] == 0 || d < depth[index] { depth[index] = d }
+            }
         }
-        if !configuration.frameSemantics.contains(.sceneDepth),
-           ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth) {
-            configuration.frameSemantics.insert(.sceneDepth)
-            changed = true
-        }
-        if changed { arSession.run(configuration) }
+        let data = depth.withUnsafeBytes { Data($0) }
+        return FrameRecorder.Plane(width: width, height: height, bytesPerPixel: 4, data: data)
     }
 
     /// Keeps the latest version of every mesh piece, including ones RoomPlan may drop between rooms.
@@ -168,6 +191,7 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureSessionDelega
         if frame.timestamp - lastMeshCheck > 1 {
             lastMeshCheck = frame.timestamp
             collectMesh()
+            if phase == .scanning { updateLiDARStatus(frame) }
         }
 
         guard let recorder else { return }
@@ -224,6 +248,7 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureSessionDelega
         do {
             let recorder = try FrameRecorder()
             recorder.coverage = coverage
+            recorder.meshDepth = { [weak self] frame in self?.depthFromMesh(frame) }
             recorder.onPhotoSaved = { [weak self] in
                 guard let self else { return }
                 self.photoCount += 1

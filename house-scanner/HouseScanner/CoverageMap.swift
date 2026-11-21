@@ -65,10 +65,13 @@ final class CoverageMap: @unchecked Sendable {
 
         depth.data.withUnsafeBytes { raw in
             let metres = raw.bindMemory(to: Float32.self)
-            for j in stride(from: 0, to: h, by: 2) {
-                for i in stride(from: 0, to: w, by: 2) {
+            // Real LiDAR depth is dense: every other pixel is plenty. Depth made from the mesh is
+            // sparse (one reading per mesh vertex), so use every pixel.
+            let step = conf == nil ? 1 : 2
+            for j in stride(from: 0, to: h, by: step) {
+                for i in stride(from: 0, to: w, by: step) {
                     let index = j * w + i
-                    if let conf, conf[index] < 2 { continue }              // high confidence only
+                    if let conf, conf[index] < 2 { continue }              // high confidence only (real depth)
                     let d = metres[index]
                     guard d.isFinite, d > Self.minDepth, d < Self.maxDepth else { continue }
                     let u = Float(i) + 0.5, v = Float(j) + 0.5
