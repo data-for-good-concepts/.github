@@ -12,7 +12,7 @@ Video + poses                  ┘   transforms.json)           · three.js view
 An iPhone app that scans your home with the LiDAR sensor and camera and exports **everything it captured**, annotated and documented, so Claude can build a photoreal 3D rendering from it. The app itself doesn't render anything photoreal; it makes sure the raw data is complete and well described.
 
 - Scan one room, or several rooms in a row. Rooms scanned in one go are joined into a single 3D model of the house.
-- **Black canvas while scanning**: the screen starts black and shows only what has been **fully captured** (seen with confident LiDAR depth in two sharp photos from different positions), in real colour, from where you are standing. You can see at a glance what's done and what's missing. A counter shows the m² captured.
+- **Black canvas while scanning**: the screen starts black and shows only what has been **fully captured** (walls, floor and furniture RoomPlan has found, seen in two sharp photos from different positions), in real colour, from where you are standing. You can see at a glance what's done and what's missing. A counter shows the m² captured.
 - 2D floor plan with wall lengths, doors, windows and furniture
 - Floor area, ceiling height, and counts of doors, windows and furniture
 - View the model in 3D or place it in AR on a table
@@ -98,7 +98,8 @@ Every scan folder contains:
 | `DXFExporter.swift` | Writes `floor-plan.dxf` |
 | `FrameRecorder.swift` | Records the video, still photos, depth and exposure during the scan |
 | `MeshExporter.swift` | Writes the LiDAR mesh as PLY |
-| `CoverageMap.swift` | Works out which areas are fully captured (3 cm grid, from each photo's LiDAR depth) |
+| `CoverageMap.swift` | Works out which areas are fully captured (3 cm grid, from each photo's depth) |
+| `RoomDepth.swift` | Depth for each photo from RoomPlan's live room model, used for the black canvas (RoomPlan gives the app no LiDAR depth) |
 | `CoverageCanvas.swift` | The black scanning screen that shows captured areas as coloured points |
 | `PackageBuilder.swift` | Builds the package (`manifest.json`, `transforms.json`, ZIP) |
 | `PackageREADME.md` | The README that goes inside every package |

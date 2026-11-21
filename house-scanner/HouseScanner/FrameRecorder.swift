@@ -63,9 +63,10 @@ final class FrameRecorder: @unchecked Sendable {
     var onPhotoSaved: (() -> Void)?
     /// Receives every saved photo's depth, so the screen can show what has been captured.
     var coverage: CoverageMap?
-    /// Depth worked out from the LiDAR mesh, used for the screen when a frame has no LiDAR depth.
-    /// It is never exported: the package only contains real depth.
-    var meshDepth: ((ARFrame) -> Plane?)?
+    /// Called on the main thread for a photo without LiDAR depth. Returns work, run on a background
+    /// queue, that makes depth for the screen from another source (ARKit's mesh or RoomPlan's room
+    /// model). It is never exported: the package only contains real depth.
+    var fallbackDepth: ((ARFrame) -> () -> Plane?)?
 
     // Video
     private var writer: AVAssetWriter?
@@ -211,7 +212,7 @@ final class FrameRecorder: @unchecked Sendable {
         // Depth buffers are reused by ARKit, so copy them now.
         let depth = frame.sceneDepth.flatMap { Self.copyPlane($0.depthMap) }
         let confidence = frame.sceneDepth?.confidenceMap.flatMap { Self.copyPlane($0) }
-        let coverageDepth = depth ?? meshDepth?(frame)
+        let makeFallbackDepth = depth == nil ? fallbackDepth?(frame) : nil
 
         var record = Frame(
             file: name, time: time,
@@ -259,7 +260,7 @@ final class FrameRecorder: @unchecked Sendable {
                 if (try? png.write(to: folder.appending(path: confidenceName))) != nil { record.confidenceFile = confidenceName }
             }
 
-            if let coverage = self.coverage, let coverageDepth,
+            if let coverage = self.coverage, let coverageDepth = depth ?? makeFallbackDepth?(),
                let rgba = Self.smallRGBA(buffer, width: coverageDepth.width, height: coverageDepth.height, context: ciContext) {
                 coverage.integrate(depth: coverageDepth, confidence: depth != nil ? confidence : nil, rgba: rgba,
                                    intrinsics: record.intrinsics, fullWidth: record.width, transform: transform)

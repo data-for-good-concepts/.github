@@ -3,8 +3,10 @@ import simd
 
 /// Keeps track of which parts of the home have been fully captured.
 ///
-/// Every saved photo comes with a LiDAR depth map. Each confident depth reading is turned into a
-/// 3D point and dropped into a 3 cm voxel grid, coloured from the photo. A voxel counts as
+/// Every saved photo comes with a depth map: LiDAR depth when ARKit provides it, otherwise depth
+/// worked out from ARKit's mesh or RoomPlan's live room model (see `RoomDepth`; with RoomPlan
+/// running, that is what is used). Each depth reading is turned into a 3D point and dropped into a
+/// 3 cm voxel grid, coloured from the photo. A voxel counts as
 /// **fully captured** once it has been seen in `requiredViews` different photos (photos are
 /// at least 30 cm or 15° apart, so these are different viewpoints). Only fully captured voxels
 /// are shown on the scanning screen.

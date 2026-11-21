@@ -54,6 +54,8 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureSessionDelega
     private let haptics = UIImpactFeedbackGenerator(style: .light)
     private var meshAnchors: [UUID: ARMeshAnchor] = [:]
     private var lastMeshCheck: TimeInterval = 0
+    /// RoomPlan's model of the finished rooms plus the one being scanned, used to fill the canvas.
+    private var roomDepth = RoomDepth(rooms: [])
 
     private(set) lazy var captureSession: RoomCaptureSession = {
         let session = RoomCaptureSession(arSession: arSession)
@@ -102,24 +104,24 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureSessionDelega
     /// What RoomPlan's own session provides. The app must not change RoomPlan's session settings:
     /// re-running it with extra options makes RoomPlan stop with "World tracking failure".
     private func updateLiDARStatus(_ frame: ARFrame) {
-        let configuration = arSession.configuration as? ARWorldTrackingConfiguration
         let depth = frame.sceneDepth != nil || frame.smoothedSceneDepth != nil
-        let mesh = !(configuration?.sceneReconstruction.isEmpty ?? true) || frame.anchors.contains { $0 is ARMeshAnchor }
-        let status = "LiDAR depth: \(depth ? "on" : "off") · Mesh: \(mesh ? "on" : "off")"
+        // RoomPlan switches on a reconstruction mode of its own, but that gives the app no mesh
+        // anchors: only count the mesh as on when there really is one.
+        let mesh = frame.anchors.contains { $0 is ARMeshAnchor }
+        let status = "LiDAR depth: \(depth ? "on" : "off") · Mesh: \(mesh ? "on" : "off") · Room model: \(roomDepth.count)"
         if status != lidarStatus { lidarStatus = status }
     }
 
     /// A 256×192 depth map made by projecting the LiDAR mesh's vertices into the camera
     /// (nearest vertex wins). Used for the black canvas when RoomPlan's session gives no depth.
-    private func depthFromMesh(_ frame: ARFrame) -> FrameRecorder.Plane? {
-        let anchors = frame.anchors.compactMap { $0 as? ARMeshAnchor }
+    private static func depthFromMesh(_ anchors: [ARMeshAnchor], camera: ARCamera) -> FrameRecorder.Plane? {
         guard !anchors.isEmpty else { return nil }
         let width = 256, height = 192
-        let scale = Float(width) / Float(frame.camera.imageResolution.width)
-        let k = frame.camera.intrinsics
+        let scale = Float(width) / Float(camera.imageResolution.width)
+        let k = camera.intrinsics
         let fx = k.columns.0.x * scale, fy = k.columns.1.y * scale
         let cx = k.columns.2.x * scale, cy = k.columns.2.y * scale
-        let worldToCamera = frame.camera.transform.inverse
+        let worldToCamera = camera.transform.inverse
         var depth = [Float32](repeating: 0, count: width * height)
         for anchor in anchors {
             let toCamera = worldToCamera * anchor.transform
@@ -192,6 +194,7 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureSessionDelega
             lastMeshCheck = frame.timestamp
             collectMesh()
             if phase == .scanning { updateLiDARStatus(frame) }
+            logDiagnostics(frame)
         }
 
         guard let recorder else { return }
@@ -206,6 +209,24 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureSessionDelega
             wanted = .none
         }
         if wanted != captureHint { captureHint = wanted }
+    }
+
+    /// Debug builds: one line per second in the device console (Xcode or `devicectl … --console`) for testing.
+    private func logDiagnostics(_ frame: ARFrame) {
+        #if DEBUG
+        let tracking: String
+        switch frame.camera.trackingState {
+        case .normal: tracking = "normal"
+        case .notAvailable: tracking = "notAvailable"
+        case .limited(let reason): tracking = "limited(\(reason))"
+        }
+        let configuration = arSession.configuration as? ARWorldTrackingConfiguration
+        print("[HouseScanner] phase=\(phase) tracking=\(tracking) \(lidarStatus.isEmpty ? "status=-" : lidarStatus)"
+              + " sceneDepth=\(frame.sceneDepth != nil) reconstruction=\(configuration?.sceneReconstruction.rawValue ?? 0)"
+              + " semantics=\(configuration?.frameSemantics.rawValue ?? 0)"
+              + " photos=\(photoCount) meshFaces=\(meshFaceCount) area=\(String(format: "%.2f", capturedArea))m²"
+              + " recorder=\(recorder != nil)")
+        #endif
     }
 
     private func updateRelocalization(_ frame: ARFrame) {
@@ -248,7 +269,12 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureSessionDelega
         do {
             let recorder = try FrameRecorder()
             recorder.coverage = coverage
-            recorder.meshDepth = { [weak self] frame in self?.depthFromMesh(frame) }
+            recorder.fallbackDepth = { [weak self] frame in
+                let room = self?.roomDepth ?? RoomDepth(rooms: [])
+                let mesh = frame.anchors.compactMap { $0 as? ARMeshAnchor }
+                let camera = frame.camera
+                return { Self.depthFromMesh(mesh, camera: camera) ?? room.depthMap(for: camera) }
+            }
             recorder.onPhotoSaved = { [weak self] in
                 guard let self else { return }
                 self.photoCount += 1
@@ -305,6 +331,14 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureSessionDelega
         }
     }
 
+    /// RoomPlan's model of the room so far: the canvas is filled in from it.
+    func captureSession(_ session: RoomCaptureSession, didUpdate room: CapturedRoom) {
+        DispatchQueue.main.async {
+            guard self.phase == .scanning else { return }
+            self.roomDepth = RoomDepth(rooms: self.rooms + [room])
+        }
+    }
+
     /// RoomPlan has the raw data for the room: build the finished room model from it.
     func captureSession(_ session: RoomCaptureSession, didEndWith data: CapturedRoomData, error: Error?) {
         if let error {
@@ -316,6 +350,7 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureSessionDelega
                 let room = try await RoomBuilder(options: [.beautifyObjects]).capturedRoom(from: data)
                 await MainActor.run {
                     self.rooms.append(room)
+                    self.roomDepth = RoomDepth(rooms: self.rooms)
                     self.phase = .roomDone
                 }
             } catch {
@@ -325,6 +360,7 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureSessionDelega
     }
 
     private func roomFailed(_ error: Error) {
+        print("[HouseScanner] room failed: \(error)")
         errorMessage = "This room could not be processed: \(error.localizedDescription)"
         phase = rooms.isEmpty ? .idle : .roomDone
     }
