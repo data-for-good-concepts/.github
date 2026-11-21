@@ -17,6 +17,8 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureViewDelegate 
     @Published var errorMessage: String?
 
     private let arSession = ARSession()
+    private var recorder: FrameRecorder?
+    private var displayLink: CADisplayLink?
 
     private(set) lazy var captureView: RoomCaptureView = {
         let view = RoomCaptureView(frame: .zero, arSession: arSession)
@@ -41,6 +43,38 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureViewDelegate 
         guard phase == .idle || phase == .roomDone else { return }
         captureView.captureSession.run(configuration: RoomCaptureSession.Configuration())
         phase = .scanning
+        startRecordingIfNeeded()
+    }
+
+    // MARK: - Video and photo recording
+
+    /// Records from the first room until the scan is saved, including walking between rooms.
+    private func startRecordingIfNeeded() {
+        guard recorder == nil else { return }
+        do {
+            recorder = try FrameRecorder()
+        } catch {
+            print("Camera recording unavailable: \(error)")
+            return
+        }
+        let link = CADisplayLink(target: self, selector: #selector(captureFrame))
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 15, maximum: 30, preferred: 30)
+        link.add(to: .main, forMode: .common)
+        displayLink = link
+    }
+
+    @objc private func captureFrame() {
+        guard let frame = arSession.currentFrame else { return }
+        recorder?.process(frame)
+    }
+
+    /// Stops recording and returns the folder with the video and photos, if anything was recorded.
+    func finishRecording() async -> URL? {
+        displayLink?.invalidate()
+        displayLink = nil
+        guard let recorder else { return nil }
+        self.recorder = nil
+        return await recorder.finish()
     }
 
     func finishRoom() {
@@ -51,6 +85,10 @@ final class ScanController: NSObject, ObservableObject, RoomCaptureViewDelegate 
     }
 
     func shutdown() {
+        displayLink?.invalidate()
+        displayLink = nil
+        recorder?.cancel()
+        recorder = nil
         if phase == .scanning {
             captureView.captureSession.stop()
         }

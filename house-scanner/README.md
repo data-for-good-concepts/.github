@@ -6,6 +6,7 @@ An iPhone app that scans your home with the LiDAR sensor using Apple's RoomPlan.
 - 2D floor plan with wall lengths, doors, windows and furniture
 - Floor area, ceiling height, and counts of doors, windows and furniture
 - View the model in 3D or place it in AR on a table
+- **Records the camera while scanning**: an MP4 video plus sharp still photos with the exact camera position, used to put real textures on walls and floors in the web viewer
 - Export as **JSON** (for 3D web apps like three.js), **DXF** (CAD floor plan with 3D walls) or **USDZ** (3D model). Send them by AirDrop to your Mac. They're also in the Files app under *On My iPhone → House Scanner*.
 
 ## What you need
@@ -35,6 +36,7 @@ An iPhone app that scans your home with the LiDAR sensor using Apple's RoomPlan.
 - Move slowly and sweep the camera from floor to ceiling. Make sure every wall corner has been seen.
 - **Several rooms:** after *Done with this room*, walk through the doorway into the next room, then tap *Scan next room*. Do all rooms in one session so they line up.
 - Close cupboards and keep doors in a consistent position (fully open or closed).
+- **For good textures:** sweep the camera up to the ceiling and down to the floor on every wall, and pause briefly now and then. Photos are only taken while the phone is fairly still.
 
 ## Export formats
 
@@ -46,6 +48,10 @@ Every scan folder contains:
 | `floor-plan.dxf` | AutoCAD R12 DXF in metres. Layers `WALLS`, `DOORS`, `WINDOWS`, `OPENINGS`, `FURNITURE`, `FLOOR`, `LABELS` (wall lengths, furniture names) and `WALLS_3D` (walls as 3D faces). |
 | `house.usdz`, `room-N.usdz` | Apple 3D models (merged house and each room) |
 | `rooms.json` | Apple's raw RoomPlan data |
+| `house-scan.zip` | `house-scene.json` + `keyframes.json` + `keyframes/*.jpg`. Open it in the web viewer for textured walls and floors. |
+| `video.mp4` | The camera feed recorded during the scan (HEVC) |
+| `video-poses.json` | Camera position and lens data for every video frame |
+| `keyframes/*.jpg`, `keyframes.json` | Sharp still photos (960 px wide) taken whenever the phone moved 30 cm or turned 15°, with camera position and lens data |
 
 ## Files
 
@@ -60,7 +66,8 @@ Every scan folder contains:
 | `RoomStats.swift` | Floor area, ceiling height and object counts |
 | `SceneExporter.swift` | Writes `house-scene.json` |
 | `DXFExporter.swift` | Writes `floor-plan.dxf` |
+| `FrameRecorder.swift` | Records the video and still photos during the scan |
 
 ## 3D web viewer
 
-`web-viewer/index.html` turns `house-scene.json` into an interactive three.js model (orbit, floor plan and walk-through). See `web-viewer/README.md`.
+`web-viewer/index.html` turns `house-scan.zip` (or `house-scene.json`) into an interactive three.js model with textured walls and floors (orbit, floor plan and walk-through). See `web-viewer/README.md`.

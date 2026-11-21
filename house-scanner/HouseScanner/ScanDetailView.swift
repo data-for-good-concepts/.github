@@ -1,3 +1,4 @@
+import AVKit
 import QuickLook
 import RoomPlan
 import SwiftUI
@@ -15,6 +16,7 @@ struct ScanDetailView: View {
     @State private var showingRename = false
     @State private var newName = ""
     @State private var showingDeleteConfirm = false
+    @State private var showingVideo = false
 
     var body: some View {
         let summary = ScanSummary(rooms: rooms)
@@ -60,6 +62,21 @@ struct ScanDetailView: View {
             }
 
             Section {
+                if scan.hasPackage {
+                    ShareLink(item: scan.packageURL) {
+                        exportLabel("Scan with textures", "ZIP · open in the web viewer for textured walls and floors", "photo.on.rectangle")
+                    }
+                }
+                if scan.hasVideo {
+                    Button {
+                        showingVideo = true
+                    } label: {
+                        Label("Watch camera video", systemImage: "play.rectangle")
+                    }
+                    ShareLink(item: scan.videoURL) {
+                        exportLabel("Camera video", "MP4 · recorded during the scan", "video")
+                    }
+                }
                 ShareLink(item: scan.sceneJSONURL) {
                     exportLabel("Scene for 3D web apps", "JSON · walls, doors, windows, furniture", "curlybraces")
                 }
@@ -112,6 +129,10 @@ struct ScanDetailView: View {
         .navigationBarTitleDisplayMode(.inline)
         .quickLookPreview($previewURL)
         .task { load() }
+        .sheet(isPresented: $showingVideo) {
+            VideoPlayer(player: AVPlayer(url: scan.videoURL))
+                .ignoresSafeArea()
+        }
         .alert("Rename scan", isPresented: $showingRename) {
             TextField("Name", text: $newName)
             Button("Save") { store.rename(scan, to: newName) }

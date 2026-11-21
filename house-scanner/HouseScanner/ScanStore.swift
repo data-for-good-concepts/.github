@@ -16,6 +16,8 @@ struct ScanMeta: Codable, Hashable {
 /// - house.usdz     all rooms merged into one model (when there is more than one room)
 /// - house-scene.json  clean JSON for building 3D scenes in JavaScript (three.js)
 /// - floor-plan.dxf    floor plan for CAD programs (with 3D walls)
+/// - video.mp4, video-poses.json, keyframes/, keyframes.json   camera recording (see FrameRecorder)
+/// - house-scan.zip    house-scene.json + keyframes, for the textured web viewer
 struct SavedScan: Identifiable, Hashable {
     let folder: URL
     var meta: ScanMeta
@@ -26,6 +28,13 @@ struct SavedScan: Identifiable, Hashable {
     var roomsDataURL: URL { folder.appending(path: "rooms.json") }
     var sceneJSONURL: URL { folder.appending(path: "house-scene.json") }
     var dxfURL: URL { folder.appending(path: "floor-plan.dxf") }
+    var videoURL: URL { folder.appending(path: "video.mp4") }
+    var keyframesURL: URL { folder.appending(path: "keyframes.json") }
+    /// house-scene.json + keyframes, zipped, for the textured web viewer.
+    var packageURL: URL { folder.appending(path: "house-scan.zip") }
+
+    var hasVideo: Bool { FileManager.default.fileExists(atPath: videoURL.path) }
+    var hasPackage: Bool { FileManager.default.fileExists(atPath: packageURL.path) }
 
     func roomModelURL(_ index: Int) -> URL {
         folder.appending(path: "room-\(index + 1).usdz")
@@ -63,7 +72,7 @@ final class ScanStore: ObservableObject {
 
     /// Saves the scanned rooms: one 3D model per room, a merged model of the whole house,
     /// and the raw data for the floor plan.
-    func save(rooms: [CapturedRoom], name: String) async throws -> SavedScan {
+    func save(rooms: [CapturedRoom], name: String, capture: URL? = nil) async throws -> SavedScan {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let displayName = trimmed.isEmpty ? "Scan" : trimmed
 
@@ -92,6 +101,22 @@ final class ScanStore: ObservableObject {
 
         try JSONEncoder().encode(rooms).write(to: scan.roomsDataURL)
         try writeExports(for: scan, rooms: rooms)
+
+        if let capture {
+            let fm = FileManager.default
+            for item in ["video.mp4", "video-poses.json", "keyframes", "keyframes.json"] {
+                let source = capture.appending(path: item)
+                if fm.fileExists(atPath: source.path) {
+                    try? fm.moveItem(at: source, to: folder.appending(path: item))
+                }
+            }
+            try? fm.removeItem(at: capture)
+            do {
+                try makePackage(for: scan)
+            } catch {
+                print("Could not create house-scan.zip: \(error)")
+            }
+        }
         try JSONEncoder().encode(scan.meta).write(to: folder.appending(path: "meta.json"))
 
         reload()
@@ -108,6 +133,33 @@ final class ScanStore: ObservableObject {
         try SceneExporter.data(rooms: rooms, name: scan.meta.name, date: scan.meta.date)
             .write(to: scan.sceneJSONURL)
         try DXFExporter.string(rooms: rooms).write(to: scan.dxfURL, atomically: true, encoding: .utf8)
+    }
+
+    /// Zips house-scene.json, keyframes.json and the keyframe photos into house-scan.zip.
+    func makePackage(for scan: SavedScan) throws {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: scan.keyframesURL.path) else { return }
+        let staging = fm.temporaryDirectory.appending(path: "package-\(UUID().uuidString)", directoryHint: .isDirectory)
+        let root = staging.appending(path: "house-scan", directoryHint: .isDirectory)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: staging) }
+
+        for item in ["house-scene.json", "keyframes.json", "keyframes"] {
+            try fm.copyItem(at: scan.folder.appending(path: item), to: root.appending(path: item))
+        }
+
+        // NSFileCoordinator's .forUploading option hands back a zip of the folder.
+        var coordinatorError: NSError?
+        var copyError: Error?
+        NSFileCoordinator().coordinate(readingItemAt: root, options: [.forUploading], error: &coordinatorError) { zipURL in
+            do {
+                if fm.fileExists(atPath: scan.packageURL.path) { try fm.removeItem(at: scan.packageURL) }
+                try fm.copyItem(at: zipURL, to: scan.packageURL)
+            } catch {
+                copyError = error
+            }
+        }
+        if let error = coordinatorError ?? copyError { throw error }
     }
 
     func rename(_ scan: SavedScan, to name: String) {

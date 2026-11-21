@@ -91,7 +91,7 @@ struct ScanView: View {
 
         case .scanning:
             VStack(spacing: 12) {
-                hint("Move slowly around the room. Point the camera at every wall, door, window and piece of furniture.")
+                hint("Move slowly around the room. Point the camera at every wall, door, window and piece of furniture. The camera is recording photos for textures: hold still for a moment now and then.")
                 bigButton("Done with this room", systemImage: "checkmark.circle.fill") {
                     controller.finishRoom()
                 }
@@ -143,7 +143,8 @@ struct ScanView: View {
         isSaving = true
         Task {
             do {
-                let scan = try await store.save(rooms: controller.rooms, name: scanName)
+                let capture = await controller.finishRecording()
+                let scan = try await store.save(rooms: controller.rooms, name: scanName, capture: capture)
                 isSaving = false
                 onSaved(scan)
                 dismiss()

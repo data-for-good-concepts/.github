@@ -168,6 +168,9 @@
   .spacer { flex: 1; }
 
   .hint { font-size: 12px; color: var(--muted); }
+  .progress { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .progress .track { flex: 1; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+  .progress .fill { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
   .error { font-size: 13px; color: var(--danger); }
   .sample-tag {
     font: 600 10px/1 var(--font-body); letter-spacing: .08em; text-transform: uppercase;
@@ -194,11 +197,11 @@
     <h1 id="name">Loading…</h1>
     <p id="sub">House Scanner model viewer</p>
   </div>
-  <label class="btn primary" for="file" title="Open a house-scene.json file from the House Scanner app">
+  <label class="btn primary" for="file" title="Open house-scan.zip (with textures) or house-scene.json from the House Scanner app">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V3M7 8l5-5 5 5"/><path d="M5 15v4a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4"/></svg>
     Open scan
   </label>
-  <input id="file" type="file" accept=".json,application/json" hidden>
+  <input id="file" type="file" accept=".zip,.json,application/zip,application/json" hidden>
 </header>
 
 <div id="info" hidden></div>
@@ -215,17 +218,21 @@
         <button id="v-walk" aria-pressed="false">Walk</button>
       </div>
       <label class="switch" for="cut"><input id="cut" type="checkbox" checked><span></span>Cutaway</label>
+      <label class="switch" for="tex" id="tex-wrap" hidden><input id="tex" type="checkbox" checked><span></span>Textures</label>
       <div class="spacer"></div>
       <button class="btn" id="reset">Reset view</button>
     </div>
     <div class="hint" id="hint">Drag to rotate · pinch to zoom · two fingers to pan · tap furniture for its size</div>
+    <div class="progress" id="progress" hidden><div class="track"><div class="fill" id="progress-fill"></div></div><span id="progress-text"></span></div>
     <div class="error" id="err" hidden></div>
   </div>
 </section>
 
-<div id="drop" hidden>Drop house-scene.json to open it</div>
+<div id="drop" hidden>Drop house-scan.zip or house-scene.json</div>
 
 <script type="application/json" id="sample-data">{"format":"house-scanner-scene","version":1,"units":"meters","upAxis":"y","name":"Sample house","scannedAt":"2026-11-21T10:00:00Z","notes":["Example data made to look like a House Scanner export."],"bounds":{"min":[-2.1,-2.1,-2.6],"max":[10.9,2.5,10.7],"center":[4.4,0.2,4.05],"size":[13.0,4.6,13.3]},"rooms":[{"index":0,"story":0,"walls":[{"id":"0927D24A-D573-4AFB-A1BF-CE38829B6292","type":"wall","position":[2.6,1.25,0.0],"rotationY":-0.0,"size":[5.2,2.5,0],"matrix":[1.0,0,0.0,0,0,1,0,0,-0.0,0,1.0,0,2.6,1.25,0.0,1],"confidence":"high"},{"id":"6BBC5C2C-8099-49AF-9C68-4D76C64AEF32","type":"wall","position":[5.2,1.25,2.1],"rotationY":-1.571,"size":[4.2,2.5,0],"matrix":[0.0,0,1.0,0,0,1,0,0,-1.0,0,0.0,0,5.2,1.25,2.1,1],"confidence":"high"},{"id":"C1C065CA-0CB4-497D-B1D1-09ECA67EA054","type":"wall","position":[2.6,1.25,4.2],"rotationY":-3.142,"size":[5.2,2.5,0],"matrix":[-1.0,0,0.0,0,0,1,0,0,-0.0,0,-1.0,0,2.6,1.25,4.2,1],"confidence":"high"},{"id":"2DF2D291-6028-49FD-96DA-5765EBA4FB28","type":"wall","position":[0.0,1.25,2.1],"rotationY":1.571,"size":[4.2,2.5,0],"matrix":[0.0,0,-1.0,0,0,1,0,0,1.0,0,0.0,0,0.0,1.25,2.1,1],"confidence":"high"}],"doors":[{"id":"C260B1CA-9D24-48F2-AE93-0D508E6F15CA","type":"door","position":[5.2,1.025,2.8],"rotationY":-1.571,"size":[0.9,2.05,0],"matrix":[0.0,0,1.0,0,0,1,0,0,-1.0,0,0.0,0,5.2,1.025,2.8,1],"confidence":"high","parentId":"6BBC5C2C-8099-49AF-9C68-4D76C64AEF32","isOpen":true}],"windows":[{"id":"6D29FF96-9195-4E9E-B103-DBA5EE6C88AD","type":"window","position":[1.6,1.45,0.0],"rotationY":-0.0,"size":[1.6,1.3,0],"matrix":[1.0,0,0.0,0,0,1,0,0,-0.0,0,1.0,0,1.6,1.45,0.0,1],"confidence":"high","parentId":"0927D24A-D573-4AFB-A1BF-CE38829B6292"},{"id":"B4F5CDA5-0078-4ACD-81C2-B583B69D7E09","type":"window","position":[0.0,1.45,2.1],"rotationY":1.571,"size":[1.4,1.3,0],"matrix":[0.0,0,-1.0,0,0,1,0,0,1.0,0,0.0,0,0.0,1.45,2.1,1],"confidence":"high","parentId":"2DF2D291-6028-49FD-96DA-5765EBA4FB28"}],"openings":[],"floors":[{"id":"A433048B-6F57-4D15-A3A3-DE2030BFCD39","type":"floor","position":[2.6,0,2.1],"rotationY":-0.0,"size":[5.2,4.2,0],"matrix":[1.0,0,0.0,0,0,1,0,0,-0.0,0,1.0,0,2.6,0,2.1,1],"confidence":"high","corners":[[0,0,0],[5.2,0,0],[5.2,0,4.2],[0,0,4.2]]}],"objects":[{"id":"25AC3993-39F3-482D-A3F7-E1F5EB4A905D","type":"object","position":[1.4,0.425,3.55],"rotationY":0.0,"size":[2.2,0.85,0.9],"matrix":[1.0,0,-0.0,0,0,1,0,0,0.0,0,1.0,0,1.4,0.425,3.55,1],"confidence":"high","category":"sofa"},{"id":"D61A6D34-CFB1-4E28-83BF-2FF3C69E89E7","type":"object","position":[1.4,0.225,2.2],"rotationY":0.0,"size":[1.1,0.45,0.6],"matrix":[1.0,0,-0.0,0,0,1,0,0,0.0,0,1.0,0,1.4,0.225,2.2,1],"confidence":"high","category":"table"},{"id":"443ADC56-754D-4A8A-99DB-027A0A20D904","type":"object","position":[1.4,0.375,0.25],"rotationY":0.0,"size":[1.3,0.75,0.3],"matrix":[1.0,0,-0.0,0,0,1,0,0,0.0,0,1.0,0,1.4,0.375,0.25,1],"confidence":"high","category":"television"},{"id":"9B2C94D4-A003-46F4-B8DE-BB445D732C34","type":"object","position":[4.6,0.95,0.35],"rotationY":0.0,"size":[1.0,1.9,0.45],"matrix":[1.0,0,-0.0,0,0,1,0,0,0.0,0,1.0,0,4.6,0.95,0.35,1],"confidence":"high","category":"storage"},{"id":"83305FCE-2348-455D-9BF1-54264C4199BE","type":"object","position":[3.9,0.45,3.4],"rotationY":-0.5,"size":[0.7,0.9,0.7],"matrix":[0.877583,0,0.479426,0,0,1,0,0,-0.479426,0,0.877583,0,3.9,0.45,3.4,1],"confidence":"high","category":"chair"}]},{"index":1,"story":0,"walls":[{"id":"2D32985C-7B8B-40D9-B920-4DD11232B5E7","type":"wall","position":[7.0,1.25,0.0],"rotationY":-0.0,"size":[3.6,2.5,0],"matrix":[1.0,0,0.0,0,0,1,0,0,-0.0,0,1.0,0,7.0,1.25,0.0,1],"confidence":"high"},{"id":"DFE41ACF-C88B-4914-972B-D884820FEF0F","type":"wall","position":[8.8,1.25,2.1],"rotationY":-1.571,"size":[4.2,2.5,0],"matrix":[0.0,0,1.0,0,0,1,0,0,-1.0,0,0.0,0,8.8,1.25,2.1,1],"confidence":"high"},{"id":"B9C82799-7A6F-4946-BA22-BEC986181CF8","type":"wall","position":[7.0,1.25,4.2],"rotationY":-3.142,"size":[3.6,2.5,0],"matrix":[-1.0,0,0.0,0,0,1,0,0,-0.0,0,-1.0,0,7.0,1.25,4.2,1],"confidence":"high"},{"id":"59D0DC2D-F418-4719-8DBC-EB46BFBA25EF","type":"wall","position":[5.2,1.25,2.1],"rotationY":1.571,"size":[4.2,2.5,0],"matrix":[0.0,0,-1.0,0,0,1,0,0,1.0,0,0.0,0,5.2,1.25,2.1,1],"confidence":"high"}],"doors":[{"id":"DF44A94F-7B63-4248-B8A3-3FA3D82867A0","type":"door","position":[5.2,1.025,2.8],"rotationY":1.571,"size":[0.9,2.05,0],"matrix":[0.0,0,-1.0,0,0,1,0,0,1.0,0,0.0,0,5.2,1.025,2.8,1],"confidence":"high","parentId":"59D0DC2D-F418-4719-8DBC-EB46BFBA25EF","isOpen":true},{"id":"4B6A3914-736F-4986-8983-425AB680CB73","type":"door","position":[8.8,1.025,1.0],"rotationY":-1.571,"size":[0.9,2.05,0],"matrix":[0.0,0,1.0,0,0,1,0,0,-1.0,0,0.0,0,8.8,1.025,1.0,1],"confidence":"high","parentId":"DFE41ACF-C88B-4914-972B-D884820FEF0F","isOpen":false}],"windows":[{"id":"766C4BD7-EC3B-4BB2-AE67-1995A2B1050E","type":"window","position":[7.0,1.45,0.0],"rotationY":-0.0,"size":[1.2,1.3,0],"matrix":[1.0,0,0.0,0,0,1,0,0,-0.0,0,1.0,0,7.0,1.45,0.0,1],"confidence":"high","parentId":"2D32985C-7B8B-40D9-B920-4DD11232B5E7"}],"openings":[],"floors":[{"id":"87CBE880-92C2-400B-BCD9-972EEEFAC79F","type":"floor","position":[7.0,0,2.1],"rotationY":-0.0,"size":[3.6,4.2,0],"matrix":[1.0,0,0.0,0,0,1,0,0,-0.0,0,1.0,0,7.0,0,2.1,1],"confidence":"high","corners":[[5.2,0,0],[8.8,0,0],[8.8,0,4.2],[5.2,0,4.2]]}],"objects":[{"id":"00A47EB0-CB4A-40E9-8E78-9C0C6FB693D7","type":"object","position":[8.45,0.925,0.4],"rotationY":1.571,"size":[0.7,1.85,0.65],"matrix":[0.0,0,-1.0,0,0,1,0,0,1.0,0,0.0,0,8.45,0.925,0.4,1],"confidence":"high","category":"refrigerator"},{"id":"2681C525-CC5D-4D0B-9D00-DD8CE4DB9B19","type":"object","position":[8.5,0.45,1.4],"rotationY":1.571,"size":[0.6,0.9,0.6],"matrix":[0.0,0,-1.0,0,0,1,0,0,1.0,0,0.0,0,8.5,0.45,1.4,1],"confidence":"high","category":"stove"},{"id":"E2B5F7E0-6E09-42CE-8F6E-D37229985D96","type":"object","position":[8.5,0.45,2.3],"rotationY":1.571,"size":[0.6,0.9,0.6],"matrix":[0.0,0,-1.0,0,0,1,0,0,1.0,0,0.0,0,8.5,0.45,2.3,1],"confidence":"high","category":"sink"},{"id":"EB1D5973-8358-4E59-A185-02B83A1753F9","type":"object","position":[8.5,0.425,2.95],"rotationY":1.571,"size":[0.6,0.85,0.6],"matrix":[0.0,0,-1.0,0,0,1,0,0,1.0,0,0.0,0,8.5,0.425,2.95,1],"confidence":"high","category":"dishwasher"},{"id":"CE9B8FD8-AF48-463A-8DE0-1A4AEAD5CFBD","type":"object","position":[6.6,0.375,2.6],"rotationY":0.0,"size":[1.4,0.75,0.9],"matrix":[1.0,0,-0.0,0,0,1,0,0,0.0,0,1.0,0,6.6,0.375,2.6,1],"confidence":"high","category":"table"},{"id":"0F5184D1-37E9-4911-8983-1CD39D301453","type":"object","position":[6.2,0.45,2.0],"rotationY":0.0,"size":[0.45,0.9,0.45],"matrix":[1.0,0,-0.0,0,0,1,0,0,0.0,0,1.0,0,6.2,0.45,2.0,1],"confidence":"high","category":"chair"},{"id":"E150C3A2-2C54-47C7-AD38-1D439D3D9E62","type":"object","position":[7.0,0.45,2.0],"rotationY":0.0,"size":[0.45,0.9,0.45],"matrix":[1.0,0,-0.0,0,0,1,0,0,0.0,0,1.0,0,7.0,0.45,2.0,1],"confidence":"high","category":"chair"},{"id":"C1B6CB69-83C3-49A2-9E47-B784684AE44F","type":"object","position":[6.2,0.45,3.2],"rotationY":3.142,"size":[0.45,0.9,0.45],"matrix":[-1.0,0,-0.0,0,0,1,0,0,0.0,0,-1.0,0,6.2,0.45,3.2,1],"confidence":"high","category":"chair"},{"id":"DFA86777-7142-401D-8288-1F42C295393B","type":"object","position":[7.0,0.45,3.2],"rotationY":3.142,"size":[0.45,0.9,0.45],"matrix":[-1.0,0,-0.0,0,0,1,0,0,0.0,0,-1.0,0,7.0,0.45,3.2,1],"confidence":"high","category":"chair"}]},{"index":2,"story":0,"walls":[{"id":"3992C616-6F3F-4362-89B7-87517655D608","type":"wall","position":[2.3,1.25,4.2],"rotationY":-0.0,"size":[4.6,2.5,0],"matrix":[1.0,0,0.0,0,0,1,0,0,-0.0,0,1.0,0,2.3,1.25,4.2,1],"confidence":"high"},{"id":"491C001C-D6EC-4A4D-B5CA-BAD3F9702424","type":"wall","position":[4.6,1.25,6.3],"rotationY":-1.571,"size":[4.2,2.5,0],"matrix":[0.0,0,1.0,0,0,1,0,0,-1.0,0,0.0,0,4.6,1.25,6.3,1],"confidence":"high"},{"id":"66EAB8D1-B880-4176-81BE-52BAF3C00130","type":"wall","position":[2.3,1.25,8.4],"rotationY":-3.142,"size":[4.6,2.5,0],"matrix":[-1.0,0,0.0,0,0,1,0,0,-0.0,0,-1.0,0,2.3,1.25,8.4,1],"confidence":"high"},{"id":"34F47E2F-A184-4002-8836-13C7D81E0862","type":"wall","position":[0.0,1.25,6.3],"rotationY":1.571,"size":[4.2,2.5,0],"matrix":[0.0,0,-1.0,0,0,1,0,0,1.0,0,0.0,0,0.0,1.25,6.3,1],"confidence":"high"}],"doors":[{"id":"6BFE84D1-D135-4177-BEC8-7882AA812D74","type":"door","position":[3.6,1.025,4.2],"rotationY":-0.0,"size":[0.9,2.05,0],"matrix":[1.0,0,0.0,0,0,1,0,0,-0.0,0,1.0,0,3.6,1.025,4.2,1],"confidence":"high","parentId":"3992C616-6F3F-4362-89B7-87517655D608","isOpen":true}],"windows":[{"id":"8FC54A5B-1607-4C15-8918-C0128B14DCDA","type":"window","position":[2.3,1.45,8.4],"rotationY":-3.142,"size":[1.8,1.3,0],"matrix":[-1.0,0,0.0,0,0,1,0,0,-0.0,0,-1.0,0,2.3,1.45,8.4,1],"confidence":"high","parentId":"66EAB8D1-B880-4176-81BE-52BAF3C00130"}],"openings":[],"floors":[{"id":"E2F2BF29-545D-4AB6-A02C-BDDDB06BBAED","type":"floor","position":[2.3,0,6.3],"rotationY":-0.0,"size":[4.6,4.2,0],"matrix":[1.0,0,0.0,0,0,1,0,0,-0.0,0,1.0,0,2.3,0,6.3,1],"confidence":"high","corners":[[0,0,4.2],[4.6,0,4.2],[4.6,0,8.4],[0,0,8.4]]}],"objects":[{"id":"2DD56597-F5BD-4E02-92A2-0623BE34D6F0","type":"object","position":[2.3,0.275,7.35],"rotationY":0.0,"size":[1.6,0.55,2.0],"matrix":[1.0,0,-0.0,0,0,1,0,0,0.0,0,1.0,0,2.3,0.275,7.35,1],"confidence":"high","category":"bed"},{"id":"11DA4691-D8DC-423D-81F9-476EE8B82653","type":"object","position":[0.35,1.05,5.6],"rotationY":1.571,"size":[0.6,2.1,1.8],"matrix":[0.0,0,-1.0,0,0,1,0,0,1.0,0,0.0,0,0.35,1.05,5.6,1],"confidence":"high","category":"storage"},{"id":"133AE5E2-DFAD-4D0C-9093-AEFBAE19A31E","type":"object","position":[3.95,0.275,7.85],"rotationY":0.0,"size":[0.45,0.55,0.4],"matrix":[1.0,0,-0.0,0,0,1,0,0,0.0,0,1.0,0,3.95,0.275,7.85,1],"confidence":"high","category":"table"}]},{"index":3,"story":0,"walls":[{"id":"6BADE51D-657D-4207-8016-9BB81592E89C","type":"wall","position":[6.7,1.25,4.2],"rotationY":-0.0,"size":[4.2,2.5,0],"matrix":[1.0,0,0.0,0,0,1,0,0,-0.0,0,1.0,0,6.7,1.25,4.2,1],"confidence":"high"},{"id":"E03924ED-E7EA-493F-85C8-3CC244A9B514","type":"wall","position":[8.8,1.25,5.6],"rotationY":-1.571,"size":[2.8,2.5,0],"matrix":[0.0,0,1.0,0,0,1,0,0,-1.0,0,0.0,0,8.8,1.25,5.6,1],"confidence":"high"},{"id":"B8B2B4A3-A228-4B3E-8FDF-2A1276858161","type":"wall","position":[6.7,1.25,7.0],"rotationY":-3.142,"size":[4.2,2.5,0],"matrix":[-1.0,0,0.0,0,0,1,0,0,-0.0,0,-1.0,0,6.7,1.25,7.0,1],"confidence":"high"},{"id":"508795A1-DD71-4E62-B3B5-F236C0332BFD","type":"wall","position":[4.6,1.25,5.6],"rotationY":1.571,"size":[2.8,2.5,0],"matrix":[0.0,0,-1.0,0,0,1,0,0,1.0,0,0.0,0,4.6,1.25,5.6,1],"confidence":"high"}],"doors":[{"id":"E232DD1A-71D5-467F-A606-D98FFFE17ECE","type":"door","position":[5.6,1.025,4.2],"rotationY":-0.0,"size":[0.9,2.05,0],"matrix":[1.0,0,0.0,0,0,1,0,0,-0.0,0,1.0,0,5.6,1.025,4.2,1],"confidence":"high","parentId":"6BADE51D-657D-4207-8016-9BB81592E89C","isOpen":false}],"windows":[{"id":"3D65C0FA-A7F8-4B4E-A983-C13764B56718","type":"window","position":[8.8,1.45,5.6],"rotationY":-1.571,"size":[0.8,1.3,0],"matrix":[0.0,0,1.0,0,0,1,0,0,-1.0,0,0.0,0,8.8,1.45,5.6,1],"confidence":"high","parentId":"E03924ED-E7EA-493F-85C8-3CC244A9B514"}],"openings":[],"floors":[{"id":"45C24D59-BDFB-470E-8B33-3EFD4AA460E0","type":"floor","position":[6.7,0,5.6],"rotationY":-0.0,"size":[4.2,2.8,0],"matrix":[1.0,0,0.0,0,0,1,0,0,-0.0,0,1.0,0,6.7,0,5.6,1],"confidence":"high","corners":[[4.6,0,4.2],[8.8,0,4.2],[8.8,0,7.0],[4.6,0,7.0]]}],"objects":[{"id":"37FF8C27-7CB8-4E55-91C7-0E93A24A682E","type":"object","position":[7.85,0.3,5.3],"rotationY":1.571,"size":[0.8,0.6,1.7],"matrix":[0.0,0,-1.0,0,0,1,0,0,1.0,0,0.0,0,7.85,0.3,5.3,1],"confidence":"high","category":"bathtub"},{"id":"BD64CA14-16CC-4545-B059-4513B32AF0B3","type":"object","position":[5.1,0.4,6.55],"rotationY":0.0,"size":[0.4,0.8,0.65],"matrix":[1.0,0,-0.0,0,0,1,0,0,0.0,0,1.0,0,5.1,0.4,6.55,1],"confidence":"high","category":"toilet"},{"id":"D04F02E2-288C-403D-A185-4A91FF5B9FB2","type":"object","position":[6.3,0.425,6.75],"rotationY":0.0,"size":[0.6,0.85,0.45],"matrix":[1.0,0,-0.0,0,0,1,0,0,0.0,0,1.0,0,6.3,0.425,6.75,1],"confidence":"high","category":"sink"},{"id":"DB654327-6784-46A6-B058-A781618B6A3A","type":"object","position":[5.0,0.425,4.6],"rotationY":0.0,"size":[0.6,0.85,0.6],"matrix":[1.0,0,-0.0,0,0,1,0,0,0.0,0,1.0,0,5.0,0.425,4.6,1],"confidence":"high","category":"washerDryer"}]}]}</script>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
 <script type="importmap">
 { "imports": {
@@ -342,7 +349,7 @@ function disposeGroup(g) {
 function build(data) {
   if (house) { scene.remove(house.group); disposeGroup(house.group); }
   const group = new THREE.Group();
-  const pickables = [], floorMeshes = [], rooms = [];
+  const pickables = [], floorMeshes = [], rooms = [], wallSurfaces = [], floorSurfaces = [];
   const clip = { clippingPlanes: [cutPlane] };
 
   const wallMat = new THREE.MeshStandardMaterial({ color: MAT.wall, roughness: 0.92, side: THREE.DoubleSide, ...clip });
@@ -396,6 +403,7 @@ function build(data) {
       const mesh = new THREE.Mesh(geom, fm);
       mesh.receiveShadow = true;
       mesh.userData.floor = true;
+      if (f.corners && f.corners.length >= 3) floorSurfaces.push({ mesh, corners: f.corners });
       floorMeshes.push(mesh);
       rg.add(mesh);
     }
@@ -420,6 +428,7 @@ function build(data) {
         shape.holes.push(hole);
       }
 
+      wallSurfaces.push({ id: w.id, m: info.m, inv: info.inv, W, H, holes: placed, shape, group: rg });
       const geom = new THREE.ExtrudeGeometry(shape, { depth: WALL_T, bevelEnabled: false });
       geom.translate(0, 0, -WALL_T / 2);
       geom.applyMatrix4(info.m);
@@ -468,7 +477,7 @@ function build(data) {
   const box = new THREE.Box3().setFromObject(group);
   const center = box.getCenter(new THREE.Vector3());
   const size = box.getSize(new THREE.Vector3());
-  house = { group, rooms, pickables, floors: floorMeshes, center, size, floorY: box.min.y, data };
+  house = { group, rooms, pickables, floors: floorMeshes, center, size, floorY: box.min.y, data, wallSurfaces, floorSurfaces, decals: [] };
 
   // Sun placement and shadow area sized to the house.
   const r = Math.max(size.x, size.z) * 0.75 + 2;
@@ -495,7 +504,7 @@ function renderUI() {
     $('name').append(tag);
   }
   $('sub').textContent = d.__sample
-    ? 'Sample data. Tap Open scan to load your own house-scene.json'
+    ? 'Sample data. Tap Open scan to load your own house-scan.zip'
     : (date && !isNaN(date) ? 'Scanned ' + date.toLocaleDateString(undefined, { dateStyle: 'medium' }) : 'House Scanner model');
 
   const all = (k) => d.rooms.reduce((n, r) => n + (r[k]?.length || 0), 0);
@@ -635,8 +644,289 @@ function onTap(e) {
   }
 }
 
+// ---------- textures from the scan's photos ----------
+// Every wall and floor is a flat plane, so each texel's 3D position can be projected into the
+// photos (ARKit camera model) and coloured from the photos that see it best.
+const TEX_PX_PER_M = 80;
+const CELL = 0.4;            // metres; photo choice is made per cell, then blended per texel
+const MAX_PHOTOS_PER_SURFACE = 40;
+let bakeRun = 0;
+
+function prepareFrames(list) {
+  return list.map((f) => {
+    const m = new THREE.Matrix4().fromArray(f.transform);
+    const e = m.elements;
+    const inv = m.clone().invert().elements;
+    return {
+      file: f.file, w: f.width, h: f.height,
+      fx: f.intrinsics[0], fy: f.intrinsics[1], cx: f.intrinsics[2], cy: f.intrinsics[3],
+      inv, pos: new THREE.Vector3(e[12], e[13], e[14]),
+    };
+  });
+}
+
+// Pixel position of world point (x, y, z) in photo f, or null if it is outside or behind.
+function project(f, x, y, z, margin) {
+  const i = f.inv;
+  const X = i[0] * x + i[4] * y + i[8] * z + i[12];
+  const Y = i[1] * x + i[5] * y + i[9] * z + i[13];
+  const Z = i[2] * x + i[6] * y + i[10] * z + i[14];
+  if (Z > -0.1) return null;
+  const u = f.fx * X / -Z + f.cx, v = f.fy * -Y / -Z + f.cy;
+  if (u < margin || v < margin || u > f.w - 1 - margin || v > f.h - 1 - margin) return null;
+  return [u, v];
+}
+
+function wallPlanes() {
+  return house.wallSurfaces.map((s) => {
+    const e = s.m.elements;
+    return {
+      s, c: new THREE.Vector3(e[12], e[13], e[14]),
+      ux: new THREE.Vector3(e[0], e[1], e[2]).normalize(),
+      uy: new THREE.Vector3(e[4], e[5], e[6]).normalize(),
+      n: new THREE.Vector3(e[8], e[9], e[10]).normalize(),
+    };
+  });
+}
+
+// True when a wall (not counting door and window holes) blocks the line from a to b.
+const _p = new THREE.Vector3();
+function blocked(planes, a, b, skip) {
+  for (const w of planes) {
+    if (w.s === skip) continue;
+    const da = _p.subVectors(a, w.c).dot(w.n), db = _p.subVectors(b, w.c).dot(w.n);
+    if (Math.abs(db) < 0.03 || da * db >= 0) continue;
+    const t = da / (da - db);
+    _p.lerpVectors(a, b, t).sub(w.c);
+    const lx = _p.dot(w.ux), ly = _p.dot(w.uy);
+    if (Math.abs(lx) > w.s.W / 2 || Math.abs(ly) > w.s.H / 2) continue;
+    if (w.s.holes.some((h) => lx > h[0] && lx < h[1] && ly > h[2] && ly < h[3])) continue;
+    return true;
+  }
+  return false;
+}
+
+async function bakeTextures(frameList, getBlob) {
+  const run = ++bakeRun;
+  const frames = prepareFrames(frameList);
+  const planes = wallPlanes();
+  const cache = new Map();
+  async function pixels(f) {
+    if (cache.has(f.file)) { const v = cache.get(f.file); cache.delete(f.file); cache.set(f.file, v); return v; }
+    const blob = await getBlob(f.file);
+    const bmp = await createImageBitmap(blob);
+    const c = document.createElement('canvas');
+    c.width = bmp.width; c.height = bmp.height;
+    const g = c.getContext('2d', { willReadFrequently: true });
+    g.drawImage(bmp, 0, 0);
+    bmp.close?.();
+    const data = g.getImageData(0, 0, c.width, c.height);
+    cache.set(f.file, data);
+    while (cache.size > 48) cache.delete(cache.keys().next().value);
+    return data;
+  }
+
+  // Each surface: origin O, edge vectors U and V, normal N facing the side the photos were taken from.
+  const surfaces = [];
+  for (const p of planes) {
+    const { s, c, ux, uy, n } = p;
+    let front = 0, back = 0;
+    for (const f of frames) {
+      if (!project(f, c.x, c.y, c.z, 0)) continue;
+      const side = _p.subVectors(f.pos, c).dot(n);
+      if (blocked(planes, f.pos, c, s)) continue;
+      if (side > 0.05) front++; else if (side < -0.05) back++;
+    }
+    if (!front && !back) continue;
+    const sign = front >= back ? 1 : -1;
+    surfaces.push({
+      kind: 'wall', s, sign,
+      O: c.clone().addScaledVector(ux, -s.W / 2).addScaledVector(uy, -s.H / 2),
+      U: ux.clone().multiplyScalar(s.W), V: uy.clone().multiplyScalar(s.H),
+      N: n.clone().multiplyScalar(sign), lenU: s.W, lenV: s.H,
+    });
+  }
+  for (const fl of house.floorSurfaces) {
+    const xs = fl.corners.map((c) => c[0]), zs = fl.corners.map((c) => c[2]);
+    const minX = Math.min(...xs), minZ = Math.min(...zs);
+    const w = Math.max(...xs) - minX, h = Math.max(...zs) - minZ;
+    const y = fl.corners.reduce((a, c) => a + c[1], 0) / fl.corners.length;
+    surfaces.push({
+      kind: 'floor', fl, minX, minZ,
+      O: new THREE.Vector3(minX, y, minZ), U: new THREE.Vector3(w, 0, 0), V: new THREE.Vector3(0, 0, h),
+      N: new THREE.Vector3(0, 1, 0), lenU: w, lenV: h,
+    });
+  }
+
+  const P = new THREE.Vector3(), toCam = new THREE.Vector3();
+  // How well photo f shows point P on a surface with normal N (0 = not at all).
+  function score(f, N, s) {
+    toCam.subVectors(f.pos, P);
+    const d = toCam.length();
+    if (d < 0.25 || d > 8) return 0;
+    const cos = toCam.dot(N) / d;
+    if (cos < 0.2) return 0;
+    const uv = project(f, P.x, P.y, P.z, 2);
+    if (!uv) return 0;
+    // Fade out towards the photo's edges so neighbouring photos blend without seams.
+    const ex = Math.min(uv[0], f.w - uv[0]) / (f.w * 0.12), ey = Math.min(uv[1], f.h - uv[1]) / (f.h * 0.12);
+    const edge = Math.min(1, ex) * Math.min(1, ey);
+    return (cos * cos / Math.max(d, 0.6)) * edge;
+  }
+
+  let done = 0;
+  setProgress(0, surfaces.length);
+  for (const sf of surfaces) {
+    if (run !== bakeRun) return;
+    const cols = Math.max(1, Math.ceil(sf.lenU / CELL)), rows = Math.max(1, Math.ceil(sf.lenV / CELL));
+
+    // 1. Best photos for each cell (with a wall-occlusion test).
+    const cellBest = [];
+    const totals = new Map();
+    for (let r = 0; r < rows; r++) for (let q = 0; q < cols; q++) {
+      P.copy(sf.O).addScaledVector(sf.U, (q + 0.5) / cols).addScaledVector(sf.V, (r + 0.5) / rows);
+      const list = [];
+      frames.forEach((f, k) => {
+        const sc = score(f, sf.N);
+        if (sc > 0 && !blocked(planes, f.pos, P, sf.s)) list.push([k, sc]);
+      });
+      list.sort((a, b) => b[1] - a[1]);
+      const top = list.slice(0, 3);
+      top.forEach(([k, sc]) => totals.set(k, (totals.get(k) || 0) + sc));
+      cellBest.push(top.map((x) => x[0]));
+    }
+    if (!totals.size) { done++; continue; }
+    const allowed = new Set([...totals.entries()].sort((a, b) => b[1] - a[1]).slice(0, MAX_PHOTOS_PER_SURFACE).map((x) => x[0]));
+    // Candidates per cell: its own photos plus its neighbours', for smooth transitions.
+    const cellCands = cellBest.map((_, ci) => {
+      const q = ci % cols, r = Math.floor(ci / cols), set = new Set();
+      for (const [dq, dr] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const qq = q + dq, rr = r + dr;
+        if (qq < 0 || rr < 0 || qq >= cols || rr >= rows) continue;
+        for (const k of cellBest[rr * cols + qq]) if (allowed.has(k)) set.add(k);
+      }
+      return [...set];
+    });
+
+    // 2. Load the photos this surface needs.
+    const imgs = new Map();
+    for (const k of allowed) {
+      try { imgs.set(k, await pixels(frames[k])); } catch { /* skip unreadable photo */ }
+      if (run !== bakeRun) return;
+    }
+
+    // 3. Colour every texel from a weighted blend of its candidate photos.
+    const tw = Math.min(1024, Math.max(8, Math.round(sf.lenU * TEX_PX_PER_M)));
+    const th = Math.min(1024, Math.max(8, Math.round(sf.lenV * TEX_PX_PER_M)));
+    const out = new ImageData(tw, th);
+    const o = out.data;
+    const covered = new Uint8Array(tw * th);
+    let sumR = 0, sumG = 0, sumB = 0, nCovered = 0;
+    for (let j = 0; j < th; j++) {
+      const t = (j + 0.5) / th, r = Math.min(rows - 1, Math.floor(t * rows));
+      for (let i = 0; i < tw; i++) {
+        const s = (i + 0.5) / tw, q = Math.min(cols - 1, Math.floor(s * cols));
+        P.copy(sf.O).addScaledVector(sf.U, s).addScaledVector(sf.V, t);
+        let R = 0, G = 0, B = 0, Wt = 0;
+        for (const k of cellCands[r * cols + q]) {
+          const img = imgs.get(k);
+          if (!img) continue;
+          const f = frames[k];
+          let wgt = score(f, sf.N);
+          if (!wgt) continue;
+          wgt = wgt * wgt * wgt * wgt;
+          const uv = project(f, P.x, P.y, P.z, 1);
+          // Bilinear sample.
+          const x0 = uv[0] | 0, y0 = uv[1] | 0, ax = uv[0] - x0, ay = uv[1] - y0;
+          const d = img.data, iw = img.width;
+          const p00 = (y0 * iw + x0) * 4, p10 = p00 + 4, p01 = p00 + iw * 4, p11 = p01 + 4;
+          for (let ch = 0; ch < 3; ch++) {
+            const v = (d[p00 + ch] * (1 - ax) + d[p10 + ch] * ax) * (1 - ay) + (d[p01 + ch] * (1 - ax) + d[p11 + ch] * ax) * ay;
+            if (ch === 0) R += v * wgt; else if (ch === 1) G += v * wgt; else B += v * wgt;
+          }
+          Wt += wgt;
+        }
+        const idx = ((th - 1 - j) * tw + i) * 4;
+        if (Wt > 0) {
+          o[idx] = R / Wt; o[idx + 1] = G / Wt; o[idx + 2] = B / Wt;
+          covered[idx >> 2] = 1;
+          sumR += o[idx]; sumG += o[idx + 1]; sumB += o[idx + 2]; nCovered++;
+        }
+        o[idx + 3] = 255;
+      }
+    }
+    // Patches no photo saw get the surface's average colour, so they blend in with the paint or floor.
+    const fill = nCovered ? [sumR / nCovered, sumG / nCovered, sumB / nCovered] : sf.kind === 'wall' ? [243, 241, 236] : [200, 190, 175];
+    for (let k = 0; k < covered.length; k++) {
+      if (covered[k]) continue;
+      o[k * 4] = fill[0]; o[k * 4 + 1] = fill[1]; o[k * 4 + 2] = fill[2];
+    }
+    if (run !== bakeRun) return;
+    applyTexture(sf, out);
+    done++;
+    setProgress(done, surfaces.length);
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  setProgress(-1);
+}
+
+function applyTexture(sf, imageData) {
+  const c = document.createElement('canvas');
+  c.width = imageData.width; c.height = imageData.height;
+  c.getContext('2d').putImageData(imageData, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+
+  if (sf.kind === 'wall') {
+    const { s, sign } = sf;
+    // A thin photo layer on the side of the wall the photos were taken from, with door and window holes.
+    const g = new THREE.ShapeGeometry(s.shape);
+    const pos = g.attributes.position, uv = g.attributes.uv;
+    for (let k = 0; k < pos.count; k++) uv.setXY(k, (pos.getX(k) + s.W / 2) / s.W, (pos.getY(k) + s.H / 2) / s.H);
+    g.translate(0, 0, sign * (WALL_T / 2 + 0.003));
+    g.applyMatrix4(s.m);
+    const mat = new THREE.MeshStandardMaterial({ map: tex, roughness: 0.9, side: THREE.DoubleSide, clippingPlanes: [cutPlane] });
+    const mesh = new THREE.Mesh(g, mat);
+    mesh.receiveShadow = true;
+    s.group.add(mesh);
+    house.decals.push(mesh);
+  } else {
+    const { fl, minX, minZ, lenU, lenV } = sf;
+    const g = fl.mesh.geometry, pos = g.attributes.position, uv = g.attributes.uv;
+    for (let k = 0; k < pos.count; k++) uv.setXY(k, (pos.getX(k) - minX) / lenU, (pos.getZ(k) - minZ) / lenV);
+    uv.needsUpdate = true;
+    fl.mesh.userData.plainColor = fl.mesh.material.color.getHex();
+    fl.mesh.userData.photoMap = tex;
+    house.decals.push(fl.mesh);
+  }
+  showTextures($('tex').checked);
+}
+
+function showTextures(on) {
+  if (!house) return;
+  for (const d of house.decals) {
+    if (d.userData.photoMap) {
+      d.material.map = on ? d.userData.photoMap : null;
+      d.material.color.setHex(on ? 0xffffff : d.userData.plainColor);
+      d.material.needsUpdate = true;
+    } else {
+      d.visible = on;
+    }
+  }
+}
+$('tex').addEventListener('change', (e) => showTextures(e.target.checked));
+
+function setProgress(done, total) {
+  const bar = $('progress');
+  if (done < 0) { bar.hidden = true; return; }
+  bar.hidden = false;
+  $('progress-fill').style.width = (total ? (done / total) * 100 : 0) + '%';
+  $('progress-text').textContent = `Building textures from photos · ${done} of ${total} surfaces`;
+}
+
 // ---------- loading files ----------
-function load(data, isSample) {
+function load(data, isSample, keyframes, getBlob) {
   if (!data || data.format !== 'house-scanner-scene' || !Array.isArray(data.rooms)) {
     showError('That file is not a House Scanner scene. Choose the house-scene.json file exported from the app.');
     return;
@@ -645,17 +935,46 @@ function load(data, isSample) {
   data.__sample = !!isSample;
   showError('');
   $('info').hidden = true;
+  bakeRun++;
+  setProgress(-1);
   build(data);
+  const frames = keyframes?.frames?.filter((f) => f.file && f.transform?.length === 16 && f.intrinsics?.length === 4) || [];
+  $('tex-wrap').hidden = !frames.length;
+  if (frames.length) {
+    bakeTextures(frames, getBlob).catch((e) => { setProgress(-1); showError('Could not build textures: ' + e.message); });
+  }
 }
 
-function readFile(file) {
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = () => {
-    try { load(JSON.parse(reader.result), false); }
-    catch { showError('Could not read that file. It needs to be the house-scene.json file from the House Scanner app.'); }
+async function loadZip(buffer, isSample) {
+  const zip = await JSZip.loadAsync(buffer);
+  const find = (name) => Object.values(zip.files).find((f) => !f.dir && (f.name === name || f.name.endsWith('/' + name)) && !f.name.includes('__MACOSX'));
+  const sceneEntry = find('house-scene.json');
+  if (!sceneEntry) throw new Error('no house-scene.json inside');
+  const prefix = sceneEntry.name.slice(0, sceneEntry.name.length - 'house-scene.json'.length);
+  const scene = JSON.parse(await sceneEntry.async('string'));
+  const kfEntry = zip.file(prefix + 'keyframes.json') || find('keyframes.json');
+  const keyframes = kfEntry ? JSON.parse(await kfEntry.async('string')) : null;
+  const getBlob = async (file) => {
+    const entry = zip.file(prefix + file);
+    if (!entry) throw new Error('missing ' + file);
+    return new Blob([await entry.async('arraybuffer')], { type: 'image/jpeg' });
   };
-  reader.readAsText(file);
+  load(scene, isSample, keyframes, getBlob);
+}
+
+async function readFile(file) {
+  if (!file) return;
+  try {
+    const buffer = await file.arrayBuffer();
+    const head = new Uint8Array(buffer, 0, Math.min(2, buffer.byteLength));
+    if (head[0] === 0x50 && head[1] === 0x4b) {          // "PK": a zip file
+      await loadZip(buffer, false);
+    } else {
+      load(JSON.parse(new TextDecoder().decode(buffer)), false);
+    }
+  } catch {
+    showError('Could not read that file. Open house-scan.zip or house-scene.json from the House Scanner app.');
+  }
 }
 $('file').addEventListener('change', (e) => { readFile(e.target.files[0]); e.target.value = ''; });
 
@@ -691,8 +1010,14 @@ function tick(now) {
   requestAnimationFrame(tick);
 }
 
-load(JSON.parse($('sample-data').textContent), true);
+// Start with the sample house: textured from its example photos when they can be fetched.
 requestAnimationFrame(tick);
+async function loadSample() {
+  const get = async (path) => { const r = await fetch(path); if (!r.ok) throw new Error(path); return r; };
+  const keyframes = await (await get('sample/keyframes.json')).json();
+  load(JSON.parse($('sample-data').textContent), true, keyframes, async (file) => (await get('sample/' + file)).blob());
+}
+loadSample().catch(() => load(JSON.parse($('sample-data').textContent), true));
 </script>
 
 </body>
