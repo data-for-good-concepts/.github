@@ -60,3 +60,7 @@ Every scan folder contains:
 | `RoomStats.swift` | Floor area, ceiling height and object counts |
 | `SceneExporter.swift` | Writes `house-scene.json` |
 | `DXFExporter.swift` | Writes `floor-plan.dxf` |
+
+## 3D web viewer
+
+`web-viewer/index.html` turns `house-scene.json` into an interactive three.js model (orbit, floor plan and walk-through). See `web-viewer/README.md`.
