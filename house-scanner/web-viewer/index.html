@@ -101,6 +101,16 @@
     outline: 2px solid var(--accent); outline-offset: 2px;
   }
 
+  #photo-nav {
+    position: fixed; z-index: 6; left: 50%; transform: translateX(-50%);
+    top: calc(env(safe-area-inset-top, 0px) + 84px);
+    display: flex; align-items: center; gap: 10px;
+    background: var(--surface-solid); border: 1px solid var(--line); border-radius: 999px;
+    padding: 4px; font-size: 13px; box-shadow: 0 6px 20px rgba(0,0,0,.12);
+  }
+  #photo-nav .btn { border-radius: 999px; min-width: 40px; justify-content: center; font-size: 18px; padding: 4px 12px; }
+  #photo-nav[hidden] { display: none; }
+  #photo-count { min-width: 120px; text-align: center; font-variant-numeric: tabular-nums; }
   #info {
     position: fixed; z-index: 6; left: 50%; transform: translateX(-50%);
     top: calc(env(safe-area-inset-top, 0px) + 84px);
@@ -205,6 +215,11 @@
 </header>
 
 <div id="info" hidden></div>
+<div id="photo-nav" hidden>
+  <button class="btn" id="p-prev" aria-label="Previous photo">‹</button>
+  <span id="photo-count"></span>
+  <button class="btn" id="p-next" aria-label="Next photo">›</button>
+</div>
 
 <section class="sheet" id="sheet" aria-label="Model controls">
   <button class="grab" id="grab" aria-label="Show or hide controls" aria-expanded="true"><span></span></button>
@@ -217,6 +232,7 @@
         <button id="v-orbit" aria-pressed="true">3D</button>
         <button id="v-top" aria-pressed="false">Plan</button>
         <button id="v-walk" aria-pressed="false">Walk</button>
+        <button id="v-photos" aria-pressed="false" hidden>Photos</button>
       </div>
       <div class="seg" role="group" aria-label="Look" id="look" hidden>
         <button id="l-model" aria-pressed="true">Model</button>
@@ -303,6 +319,7 @@ function resize() {
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
+  sizePhotoPasses();
 }
 window.addEventListener('resize', resize);
 resize();
@@ -358,7 +375,7 @@ function build(data) {
     if (house.splats) for (const x of house.splats.sets) { scene.remove(x.mesh); x.mesh.dispose(); }
   }
   const group = new THREE.Group();
-  const pickables = [], floorMeshes = [], rooms = [], wallSurfaces = [], floorSurfaces = [];
+  const pickables = [], floorMeshes = [], rooms = [], wallSurfaces = [], floorSurfaces = [], proxy = [];
   // Each room's floor height. Rooms on different storeys (or split levels) are grouped into levels,
   // and every room is cut away at 1.25 m above its own floor.
   const roomFloorY = data.rooms.map((r) => {
@@ -425,6 +442,7 @@ function build(data) {
       const mesh = new THREE.Mesh(geom, fm);
       mesh.receiveShadow = true;
       mesh.userData.floor = true;
+      proxy.push(geom);
       if (f.corners && f.corners.length >= 3) floorSurfaces.push({ mesh, corners: f.corners });
       floorMeshes.push(mesh);
       rg.add(mesh);
@@ -456,6 +474,7 @@ function build(data) {
       geom.applyMatrix4(info.m);
       const mesh = new THREE.Mesh(geom, wallMat);
       mesh.castShadow = true; mesh.receiveShadow = true;
+      proxy.push(geom);
       rg.add(mesh);
       rg.add(new THREE.LineSegments(new THREE.EdgesGeometry(geom, 25), edgeMat));
     }
@@ -502,7 +521,11 @@ function build(data) {
   const center = box.getCenter(new THREE.Vector3());
   const size = box.getSize(new THREE.Vector3());
   house = { group, rooms, pickables, floors: floorMeshes, center, size, floorY: box.min.y, data, wallSurfaces, floorSurfaces, decals: [],
-            meshFurniture: [], furnitureBoxes: [], colouredBoxes: [], splats: null, levels };
+            meshFurniture: [], furnitureBoxes: [], colouredBoxes: [], splats: null, levels, proxy, frames: null };
+  $('v-photos').hidden = true;
+  for (const t of photoWalk.textures.values()) { t.dispose(); t.image?.close?.(); }
+  for (const t of photoWalk.depthTex.values()) t.dispose();
+  photoWalk.textures.clear(); photoWalk.depthTex.clear(); photoWalk.a = -1; photoWalk.b = -1; photoWalk.anim = null;
   $('look').hidden = true;
   look = 'model';
 
@@ -619,7 +642,9 @@ function shownFloorY() {
 
 function setView(v) {
   view = v;
-  for (const id of ['orbit', 'top', 'walk']) $('v-' + id).setAttribute('aria-pressed', String(id === v));
+  for (const id of ['orbit', 'top', 'walk', 'photos']) $('v-' + id).setAttribute('aria-pressed', String(id === v));
+  $('photo-nav').hidden = v !== 'photos';
+  if (v !== 'photos') { photoWalk.a = -1; photoWalk.b = -1; photoWalk.anim = null; if (camera.fov !== 50) { camera.fov = 50; camera.updateProjectionMatrix(); } }
   tween = null;
   const c = house.center;
   controls.enableZoom = true; controls.enablePan = true; controls.rotateSpeed = 1;
@@ -636,6 +661,11 @@ function setView(v) {
     camera.position.set(c.x, shownFloorY() + dist * 1.05, c.z + 0.001);
     controls.target.set(c.x, shownFloorY(), c.z);
     $('hint').textContent = 'Seen from above, 1 m grid · pinch to zoom · two fingers to pan';
+  } else if (v === 'photos') {
+    controls.enableZoom = false; controls.enablePan = false; controls.rotateSpeed = -0.35;
+    controls.minDistance = 0; controls.minPolarAngle = 0.1; controls.maxPolarAngle = Math.PI - 0.1;
+    $('hint').textContent = 'Real photos · drag to look around · tap where you want to go · ‹ › next photo · scroll to zoom';
+    goToPhoto(startPhoto(), 0);
   } else {
     // Stand in the middle of the first visible room, at eye height.
     const room = house.rooms.find((r) => r.group.visible) || house.rooms[0];
@@ -652,14 +682,15 @@ function setView(v) {
 
 function updateCut() {
   renderer.clippingPlanes = [];
-  renderer.localClippingEnabled = $('cut').checked && view !== 'walk';
-  $('cut').disabled = view === 'walk';
+  renderer.localClippingEnabled = $('cut').checked && !insideView();
+  $('cut').disabled = insideView();
   if (house?.splats) setLook(look);
 }
 
 $('v-orbit').addEventListener('click', () => setView('orbit'));
 $('v-top').addEventListener('click', () => setView('top'));
 $('v-walk').addEventListener('click', () => setView('walk'));
+$('v-photos').addEventListener('click', () => setView('photos'));
 $('reset').addEventListener('click', () => setView(view));
 $('cut').addEventListener('change', updateCut);
 
@@ -678,6 +709,13 @@ canvas.addEventListener('pointerup', (e) => {
 function onTap(e) {
   const ndc = new THREE.Vector2((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
   ray.setFromCamera(ndc, camera);
+  if (view === 'photos') {
+    if (photoWalk.anim) return;
+    const k = photoForTap(ray.ray.direction.clone());
+    if (k >= 0) goToPhoto(k);
+    else { $('photo-count').textContent = 'No photo that way'; setTimeout(updatePhotoCount, 1200); }
+    return;
+  }
   const visible = (o) => { for (let p = o; p; p = p.parent) if (!p.visible) return false; return true; };
   const hits = ray.intersectObjects([...house.pickables, ...house.floors], false).filter((h) => visible(h.object));
   const hit = hits[0];
@@ -719,6 +757,8 @@ function prepareFrames(list) {
       file: f.file, w: Math.round(f.width * s), h: Math.round(f.height * s),
       fx: f.intrinsics[0] * s, fy: f.intrinsics[1] * s, cx: f.intrinsics[2] * s, cy: f.intrinsics[3] * s,
       inv, pos: new THREE.Vector3(e[12], e[13], e[14]),
+      fwd: new THREE.Vector3(-e[8], -e[9], -e[10]).normalize(),
+      xAxis: new THREE.Vector3(e[0], e[1], e[2]).normalize(), yAxis: new THREE.Vector3(e[4], e[5], e[6]).normalize(),
     };
   });
 }
@@ -1732,7 +1772,7 @@ function setLook(l) {
   if (!splats) showTextures($('tex').checked);
   if (grid) grid.visible = !splats;   // splats don't hide the grid behind them
   if (house.splats) {
-    const cut = renderer.localClippingEnabled && view !== 'walk';
+    const cut = renderer.localClippingEnabled && !insideView();
     for (const x of house.splats.sets) {
       const levelShown = house.rooms.some((r) => r.level === x.level && r.group.visible);
       x.mesh.visible = splats && levelShown && !(x.upper && cut);
@@ -1776,6 +1816,8 @@ async function processScan(frameList, getBlob, plyBuffers) {
   const run = ++bakeRun;
   const frames = prepareFrames(frameList);
   const pixels = makePhotoCache(getBlob);
+  house.frames = frames;
+  house.getBlob = getBlob;
   let mesh = null;
   if (plyBuffers.length) {
     setProgress(0, 1, 'Reading the LiDAR mesh');
@@ -1790,6 +1832,8 @@ async function processScan(frameList, getBlob, plyBuffers) {
     if (mesh) await renderDepthMaps(frames, mesh, run);
   }
   if (run !== bakeRun) return;
+  buildPhotoProxy(mesh);
+  $('v-photos').hidden = false;
   await bakeTextures(frames, pixels, run, getBlob);
   if (mesh && run === bakeRun) {
     await buildFurniture(mesh, frames, pixels, run);
@@ -1851,6 +1895,313 @@ function setCollapsed(c) {
 $('grab').addEventListener('click', () => setCollapsed(!$('sheet').classList.contains('collapsed')));
 try { if (localStorage.getItem('sheetCollapsed') === '1') setCollapsed(true); } catch {}
 
+// ---------- Photo walk ----------
+// Stand where a photo was taken and see that photo, projected onto the scanned geometry. From the
+// photo's own position the projection lines up exactly whatever the geometry's errors, so the view
+// is the real photo; moving to another photo cross-fades between the two projections. Anything a
+// photo doesn't cover shows the textured model underneath.
+// `var` so resize() (which runs before this point) can check it.
+var photoWalk = {
+  a: -1, b: -1, mix: 0, anim: null, textures: new Map(), depthTex: new Map(), loading: new Set(),
+  baseRT: null, posRT: null, proxyScene: null, quad: null, quadCam: null,
+  zoom: 1.35,   // field of view relative to the photo's
+};
+
+function insideView() { return view === 'walk' || view === 'photos'; }
+
+function setupPhotoPasses() {
+  if (photoWalk.quad) return;
+  const full = renderer.extensions.has('EXT_color_buffer_float');
+  photoWalk.baseRT = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 });
+  photoWalk.posRT = new THREE.WebGLRenderTarget(1, 1, { type: full ? THREE.FloatType : THREE.HalfFloatType, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+  photoWalk.proxyMaterial = new THREE.ShaderMaterial({
+    vertexShader: 'varying vec3 vWorld; void main() { vec4 w = modelMatrix * vec4(position, 1.0); vWorld = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }',
+    fragmentShader: 'varying vec3 vWorld; void main() { gl_FragColor = vec4(vWorld, 1.0); }',
+    side: THREE.DoubleSide,
+  });
+  photoWalk.proxyScene = new THREE.Scene();
+  const blank = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1);
+  blank.needsUpdate = true;
+  const blankDepth = new THREE.DataTexture(new Float32Array([0]), 1, 1, THREE.RedFormat, THREE.FloatType);
+  blankDepth.needsUpdate = true;
+  photoWalk.blank = blank; photoWalk.blankDepth = blankDepth;
+  photoWalk.quadMaterial = new THREE.ShaderMaterial({
+    uniforms: {
+      tBase: { value: null }, tPos: { value: null },
+      tA: { value: blank }, tB: { value: blank }, dA: { value: blankDepth }, dB: { value: blankDepth },
+      viewA: { value: new THREE.Matrix4() }, viewB: { value: new THREE.Matrix4() },
+      inA: { value: new THREE.Vector4() }, inB: { value: new THREE.Vector4() },
+      hasA: { value: 0 }, hasB: { value: 0 }, depthA: { value: 0 }, depthB: { value: 0 }, mixAB: { value: 0 },
+      camWorld: { value: new THREE.Matrix4() }, projInv: { value: new THREE.Matrix4() },
+    },
+    vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
+    fragmentShader: `
+      varying vec2 vUv;
+      uniform sampler2D tBase, tPos, tA, tB, dA, dB;
+      uniform mat4 viewA, viewB, camWorld, projInv;
+      uniform vec4 inA, inB;
+      uniform float hasA, hasB, depthA, depthB, mixAB;
+      // Colour of world point p (w = 1) or direction p (w = 0) in a photo, alpha = how fully it covers it.
+      vec4 project(sampler2D tex, sampler2D dep, float useDepth, mat4 view, vec4 intr, vec4 p) {
+        vec3 c = (view * p).xyz;
+        if (c.z > -0.02) return vec4(0.0);
+        float u = intr.x * c.x / -c.z + intr.z;
+        float v = intr.y * -c.y / -c.z + intr.w;
+        if (u < 0.0 || u > 1.0 || v < 0.0 || v > 1.0) return vec4(0.0);
+        if (useDepth > 0.5 && p.w > 0.5) {
+          float d = texture2D(dep, vec2(u, v)).r;
+          if (d > 0.0 && -c.z > d + 0.15) return vec4(0.0);   // hidden from this photo
+        }
+        float edge = smoothstep(0.0, 0.03, min(min(u, 1.0 - u), min(v, 1.0 - v)));
+        return vec4(texture2D(tex, vec2(u, 1.0 - v)).rgb, edge);
+      }
+      void main() {
+        vec4 base = texture2D(tBase, vUv);
+        vec4 pos = texture2D(tPos, vUv);
+        vec4 p;
+        if (pos.a > 0.5) p = vec4(pos.xyz, 1.0);
+        else {
+          vec4 ray = projInv * vec4(vUv * 2.0 - 1.0, 1.0, 1.0);
+          p = vec4(normalize((camWorld * vec4(ray.xyz / ray.w, 0.0)).xyz), 0.0);
+        }
+        vec4 a = hasA > 0.5 ? project(tA, dA, depthA, viewA, inA, p) : vec4(0.0);
+        vec4 b = hasB > 0.5 ? project(tB, dB, depthB, viewB, inB, p) : vec4(0.0);
+        float wa = a.a * (1.0 - mixAB) + 1e-4 * a.a, wb = b.a * mixAB + 1e-4 * b.a;
+        vec3 photo = wa + wb > 0.0 ? (a.rgb * wa + b.rgb * wb) / (wa + wb) : base.rgb;
+        float cover = max(a.a, b.a);
+        gl_FragColor = vec4(mix(base.rgb, photo, cover), 1.0);
+        #include <colorspace_fragment>
+      }`,
+    depthTest: false, depthWrite: false,
+  });
+  photoWalk.quad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), photoWalk.quadMaterial);
+  photoWalk.quad.frustumCulled = false;
+  photoWalk.quadScene = new THREE.Scene();
+  photoWalk.quadScene.add(photoWalk.quad);
+  photoWalk.quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  sizePhotoPasses();
+}
+
+function sizePhotoPasses() {
+  if (!photoWalk?.baseRT) return;
+  const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+  photoWalk.baseRT.setSize(size.x, size.y);
+  photoWalk.posRT.setSize(size.x, size.y);
+}
+
+// The geometry photos are projected onto: RoomPlan walls and floors plus the LiDAR mesh.
+function buildPhotoProxy(lidar) {
+  setupPhotoPasses();
+  const scene = photoWalk.proxyScene;
+  for (const o of [...scene.children]) { scene.remove(o); if (o.userData.own) o.geometry.dispose(); }
+  for (const g of house.proxy) scene.add(new THREE.Mesh(g, photoWalk.proxyMaterial));
+  if (lidar) {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(lidar.positions, 3));
+    g.setIndex(new THREE.BufferAttribute(lidar.indices, 1));
+    const m = new THREE.Mesh(g, photoWalk.proxyMaterial);
+    m.frustumCulled = false; m.userData.own = true;
+    scene.add(m);
+  }
+}
+
+async function photoTexture(k) {
+  if (photoWalk.textures.has(k)) { const t = photoWalk.textures.get(k); photoWalk.textures.delete(k); photoWalk.textures.set(k, t); return t; }
+  const f = house.frames[k];
+  const bmp = await createImageBitmap(await house.getBlob(f.file), { imageOrientation: 'flipY' });
+  const t = new THREE.Texture(bmp);
+  t.flipY = false;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  t.needsUpdate = true;
+  photoWalk.textures.set(k, t);
+  while (photoWalk.textures.size > 6) {
+    const [oldK, old] = photoWalk.textures.entries().next().value;
+    if (oldK === photoWalk.a || oldK === photoWalk.b) break;
+    photoWalk.textures.delete(oldK); old.dispose(); old.image?.close?.();
+  }
+  return t;
+}
+
+function photoDepth(k) {
+  const f = house.frames[k];
+  if (!f.depth) return null;
+  if (!photoWalk.depthTex.has(k)) {
+    const t = new THREE.DataTexture(f.depth, DEPTH_W, DEPTH_H, THREE.RedFormat, THREE.FloatType);
+    t.needsUpdate = true;
+    photoWalk.depthTex.set(k, t);
+  }
+  return photoWalk.depthTex.get(k);
+}
+
+function setPhotoUniforms(slot, k, texture) {
+  const u = photoWalk.quadMaterial.uniforms, f = house.frames[k];
+  const S = slot === 'a' ? 'A' : 'B';
+  u['t' + S].value = texture;
+  u['view' + S].value.fromArray(f.inv);
+  u['in' + S].value.set(f.fx / f.w, f.fy / f.h, f.cx / f.w, f.cy / f.h);
+  const d = photoDepth(k);
+  u['d' + S].value = d || photoWalk.blankDepth;
+  u['depth' + S].value = d ? 1 : 0;
+  u['has' + S].value = 1;
+}
+
+// Camera pose and lens for standing in photo k: its position and view direction, world up kept up,
+// and a field of view that the photo fills.
+function photoPose(k) {
+  const f = house.frames[k];
+  const portrait = Math.abs(f.xAxis.y) > Math.abs(f.yAxis.y);
+  const extW = 2 * Math.atan(f.w / 2 / f.fx), extH = 2 * Math.atan(f.h / 2 / f.fy);
+  const vertical = portrait ? extW : extH, horizontal = portrait ? extH : extW;
+  // Somewhat wider than the photo, so the textured model around it shows where you are.
+  const fit = Math.min(vertical, 2 * Math.atan(Math.tan(horizontal / 2) / camera.aspect)) * photoWalk.zoom;
+  return { pos: f.pos.clone(), dir: f.fwd.clone(), fov: THREE.MathUtils.clamp(THREE.MathUtils.radToDeg(fit), 25, 110) };
+}
+
+async function goToPhoto(k, ms = 900) {
+  if (!house?.frames || k < 0 || k >= house.frames.length) return;
+  setupPhotoPasses();
+  const first = photoWalk.a < 0;
+  let texture;
+  $('photo-count').textContent = `Loading photo ${k + 1}…`;
+  try { texture = await photoTexture(k); } catch { $('photo-count').textContent = 'Could not load that photo'; return; }
+  if (view !== 'photos') return;
+  const to = photoPose(k);
+  if (first || ms === 0) {
+    photoWalk.a = k; photoWalk.b = -1; photoWalk.mix = 0;
+    setPhotoUniforms('a', k, texture);
+    photoWalk.quadMaterial.uniforms.hasB.value = 0;
+    camera.position.copy(to.pos);
+    camera.fov = to.fov; camera.updateProjectionMatrix();
+    controls.target.copy(to.pos).addScaledVector(to.dir, 0.01);
+  } else {
+    photoWalk.b = k;
+    setPhotoUniforms('b', k, texture);
+    const look = controls.target.clone().sub(camera.position).normalize();
+    photoWalk.anim = { t0: performance.now(), ms, fromPos: camera.position.clone(), toPos: to.pos, fromDir: look, toDir: to.dir, fromFov: camera.fov, toFov: to.fov };
+  }
+  updatePhotoCount();
+  // Load the neighbours in the walk ahead of time.
+  for (const n of [k - 1, k + 1]) if (n >= 0 && n < house.frames.length && !photoWalk.textures.has(n)) photoTexture(n).catch(() => {});
+}
+
+function updatePhotoCount() {
+  const k = photoWalk.b >= 0 ? photoWalk.b : photoWalk.a;
+  $('photo-count').textContent = `Photo ${k + 1} of ${house.frames.length}`;
+}
+
+function stepPhotoAnimation(now) {
+  const an = photoWalk.anim;
+  if (!an) return;
+  const t = Math.min(1, (now - an.t0) / an.ms);
+  const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+  camera.position.lerpVectors(an.fromPos, an.toPos, e);
+  const dir = an.fromDir.clone().lerp(an.toDir, e).normalize();
+  controls.target.copy(camera.position).addScaledVector(dir, 0.01);
+  camera.fov = an.fromFov + (an.toFov - an.fromFov) * e;
+  camera.updateProjectionMatrix();
+  photoWalk.mix = e;
+  if (t >= 1) {
+    // B becomes the current photo.
+    photoWalk.a = photoWalk.b; photoWalk.b = -1; photoWalk.mix = 0; photoWalk.anim = null;
+    const u = photoWalk.quadMaterial.uniforms;
+    u.tA.value = u.tB.value; u.viewA.value.copy(u.viewB.value); u.inA.value.copy(u.inB.value);
+    u.dA.value = u.dB.value; u.depthA.value = u.depthB.value; u.hasB.value = 0;
+    updatePhotoCount();
+  }
+}
+
+function renderPhotoWalk() {
+  const u = photoWalk.quadMaterial.uniforms;
+  renderer.setRenderTarget(photoWalk.baseRT);
+  renderer.render(scene, camera);
+  const clear = renderer.getClearColor(new THREE.Color()), alpha = renderer.getClearAlpha();
+  renderer.setClearColor(0x000000, 0);
+  renderer.setRenderTarget(photoWalk.posRT);
+  renderer.clear();
+  renderer.render(photoWalk.proxyScene, camera);
+  renderer.setClearColor(clear, alpha);
+  renderer.setRenderTarget(null);
+  u.tBase.value = photoWalk.baseRT.texture;
+  u.tPos.value = photoWalk.posRT.texture;
+  u.mixAB.value = photoWalk.mix;
+  u.camWorld.value.copy(camera.matrixWorld);
+  u.projInv.value.copy(camera.projectionMatrixInverse);
+  renderer.render(photoWalk.quadScene, photoWalk.quadCam);
+}
+
+// A good first view of the first room on show: taken near its middle, looking level, seeing far.
+function startPhoto() {
+  const room = house.rooms.find((r) => r.group.visible) || house.rooms[0];
+  const box = new THREE.Box3().setFromObject(room.group);
+  const c = box.getCenter(new THREE.Vector3());
+  c.y = room.floorY + EYE;
+  let best = 0, bestScore = Infinity;
+  house.frames.forEach((f, k) => {
+    if (!box.containsPoint(f.pos)) return;
+    let far = 2;
+    if (f.depth) {   // median distance of what the photo sees
+      const d = [];
+      for (let i = 0; i < f.depth.length; i += 97) if (f.depth[i] > 0) d.push(f.depth[i]);
+      d.sort((x, y) => x - y);
+      far = d.length ? d[d.length >> 1] : 0;
+    }
+    const score = f.pos.distanceTo(c) * 0.3 + Math.abs(f.fwd.y) * 2 - Math.min(far, 6) * 1.5;
+    if (score < bestScore) { bestScore = score; best = k; }
+  });
+  return best;
+}
+
+// Tapping in the walk: go to the photo taken nearest the direction tapped, looking that way.
+function photoForTap(ray) {
+  let best = -1, bestScore = Infinity;
+  house.frames.forEach((f, k) => {
+    if (k === photoWalk.a) return;
+    const d = f.pos.clone().sub(camera.position);
+    const dist = d.length();
+    if (dist < 0.3 || dist > 6) return;
+    const angle = d.normalize().angleTo(ray);
+    if (angle > 0.45) return;
+    const facing = 1 - f.fwd.dot(ray);
+    const score = angle * 2 + facing + 0.12 * dist;
+    if (score < bestScore) { bestScore = score; best = k; }
+  });
+  return best;
+}
+
+// After looking around: switch to a photo from about here that faces the new direction better.
+function photoForLook() {
+  const look = controls.target.clone().sub(camera.position).normalize();
+  const current = house.frames[photoWalk.a];
+  let best = photoWalk.a, bestScore = current.fwd.dot(look);
+  house.frames.forEach((f, k) => {
+    const dist = f.pos.distanceTo(camera.position);
+    if (dist > 1.5) return;
+    const score = f.fwd.dot(look) - 0.25 * dist;
+    if (score > bestScore + 0.05) { bestScore = score; best = k; }
+  });
+  return best;
+}
+controls.addEventListener('end', () => {
+  if (view !== 'photos' || photoWalk.anim || photoWalk.a < 0) return;
+  const k = photoForLook();
+  if (k !== photoWalk.a) goToPhoto(k, 450);
+});
+$('p-prev').addEventListener('click', () => { if (!photoWalk.anim) goToPhoto(photoWalk.a - 1, 700); });
+$('p-next').addEventListener('click', () => { if (!photoWalk.anim) goToPhoto(photoWalk.a + 1, 700); });
+// Wheel: zoom by changing the field of view (the camera has to stay where the photo was taken).
+canvas.addEventListener('wheel', (e) => {
+  if (view !== 'photos' || photoWalk.a < 0) return;
+  e.preventDefault();
+  photoWalk.zoom = THREE.MathUtils.clamp(photoWalk.zoom * Math.exp(e.deltaY * 0.001), 0.5, 2.2);
+  if (!photoWalk.anim) { camera.fov = photoPose(photoWalk.a).fov; camera.updateProjectionMatrix(); }
+}, { passive: false });
+window.addEventListener('keydown', (e) => {
+  if (view !== 'photos' || photoWalk.anim) return;
+  if (e.key === 'ArrowLeft') goToPhoto(photoWalk.a - 1, 700);
+  if (e.key === 'ArrowRight') goToPhoto(photoWalk.a + 1, 700);
+});
+
 // ---------- loop ----------
 function tick(now) {
   if (tween) {
@@ -1860,8 +2211,10 @@ function tick(now) {
     controls.target.copy(camera.position).add(tween.look);
     if (k >= 1) tween = null;
   }
+  if (view === 'photos') stepPhotoAnimation(now);
   controls.update();
-  renderer.render(scene, camera);
+  if (view === 'photos' && photoWalk.a >= 0) renderPhotoWalk();
+  else renderer.render(scene, camera);
   requestAnimationFrame(tick);
 }
 

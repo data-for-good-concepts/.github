@@ -16,6 +16,12 @@ Views:
 
 > The textured example needs the page to be served over http (for example `python3 -m http.server` in this folder). Opened straight from disk, the browser blocks loading the sample photos and the example shows without textures. Your own ZIP works either way.
 
+## Photos (photo walk)
+
+With photos in the package, **Photos** puts you where a photo was taken and shows that real photo, projected onto the scanned walls, floor and LiDAR mesh. From the photo's own position the projection lines up exactly, so you see the actual photo; around its edges the textured model continues. Tap where you want to go to move to the photo taken that way (it cross-fades between the two), drag to look around (it switches to a nearby photo that faces that way), use ‹ › or the arrow keys to step through the photos in the order they were taken, and scroll to zoom.
+
+It starts at the photo that sees farthest into the first room on show. Close-up photos (the LiDAR walk's) show close-ups; wide shots from the middle of a room make the nicest walk.
+
 ## Model and Splats
 
 When the ZIP contains the LiDAR mesh (`mesh/*.ply`, from the LiDAR walk), two more things happen:
